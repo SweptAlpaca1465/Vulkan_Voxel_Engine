@@ -1,0 +1,20 @@
+# build
+build/
+cmake-build*/
+CMakeFiles/
+CMakeCache.txt
+
+# binaries
+*.o
+*.so
+*.a
+*.out
+
+# shader binaries
+*.spv
+
+# vscode
+.vscode/
+
+# temporary
+*.log
