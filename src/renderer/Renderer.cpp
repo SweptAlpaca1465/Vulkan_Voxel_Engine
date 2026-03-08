@@ -7,7 +7,9 @@
 #include "renderer/UniformBufferObject.hpp"
 #include "renderer/Frustum.hpp"
 #include "camera/Camera.hpp"
+#include "player/Player.hpp"
 #include "world/Chunk.hpp"
+#include "world/Physics.hpp"
 #include "world/World.hpp"
 #include "world/WorldMesher.hpp"
 
@@ -29,15 +31,6 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
-struct BlockRaycastHit {
-    bool hit = false;
-
-    glm::ivec3 block{0};
-    glm::ivec3 placeBlock{0};
-    glm::ivec3 hitNormal{0};
-
-    BlockType blockType = BlockType::Air;
-};
 struct DebugVertex {
     glm::vec3 position;
     glm::vec3 color;
@@ -48,6 +41,7 @@ public:
     explicit Impl(Window& window)
         : window(window) {
         glfwSetInputMode(window.getNativeHandle(), GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        camera.setPosition(player.getEyePosition());
         lastFpsTime = glfwGetTime();
         initVulkan();
     }
@@ -78,8 +72,13 @@ public:
         }
 
         updateDebugToggles();
-        updateCameraFromInput();
         updateCameraRotationFromMouse();
+
+        bool wantsJump = false;
+        const glm::vec3 wishMove = getMovementInput(wantsJump);
+        physics.simulatePlayer(player, world, wishMove, wantsJump);
+        camera.setPosition(player.getEyePosition());
+
         updateLoadedChunksAroundCamera();
         updateSelectedBlock();
         updateBlockInteraction();
@@ -163,6 +162,8 @@ private:
 
     World world;
     WorldMesherCache worldMesherCache;
+    Player player;
+    Physics physics;
     bool renderDataDirty = true;
 
     ChunkCoord currentCenterChunk{};
@@ -173,7 +174,6 @@ private:
     std::vector<uint32_t> visibleChunkIndices;
     size_t visibleChunkCount = 0;
 
-    BlockType selectedBlockType = BlockType::Stone;
     bool hasSelectedBlock = false;
     glm::ivec3 selectedBlockPos{0};
 
@@ -440,13 +440,13 @@ private:
         }
 
         if (glfwGetKey(nativeWindow, GLFW_KEY_1) == GLFW_PRESS) {
-            selectedBlockType = BlockType::Grass;
+            player.setSelectedBlockType(BlockType::Grass);
         }
         if (glfwGetKey(nativeWindow, GLFW_KEY_2) == GLFW_PRESS) {
-            selectedBlockType = BlockType::Dirt;
+            player.setSelectedBlockType(BlockType::Dirt);
         }
         if (glfwGetKey(nativeWindow, GLFW_KEY_3) == GLFW_PRESS) {
-            selectedBlockType = BlockType::Stone;
+            player.setSelectedBlockType(BlockType::Stone);
         }
 
         f1PressedLastFrame = f1CurrentlyPressed;
@@ -502,29 +502,40 @@ private:
         createGraphicsPipeline();
     }
 
-    void updateCameraFromInput() {
-        constexpr float moveSpeed = 0.001f;
-
+    glm::vec3 getMovementInput(bool& wantsJump) {
         GLFWwindow* nativeWindow = window.getNativeHandle();
 
+        glm::vec3 wishMove(0.0f);
+
+        const glm::vec3 cameraForward = camera.getForward();
+        glm::vec3 planarForward(cameraForward.x, 0.0f, cameraForward.z);
+
+        if (glm::length(planarForward) > 0.0001f) {
+            planarForward = glm::normalize(planarForward);
+        } else {
+            planarForward = glm::vec3(0.0f, 0.0f, -1.0f);
+        }
+
+        const glm::vec3 planarRight = glm::normalize(glm::cross(planarForward, glm::vec3(0.0f, 1.0f, 0.0f)));
+
         if (glfwGetKey(nativeWindow, GLFW_KEY_W) == GLFW_PRESS) {
-            camera.moveForward(moveSpeed);
+            wishMove += planarForward;
         }
         if (glfwGetKey(nativeWindow, GLFW_KEY_S) == GLFW_PRESS) {
-            camera.moveForward(-moveSpeed);
+            wishMove -= planarForward;
         }
         if (glfwGetKey(nativeWindow, GLFW_KEY_D) == GLFW_PRESS) {
-            camera.moveRight(moveSpeed);
+            wishMove += planarRight;
         }
         if (glfwGetKey(nativeWindow, GLFW_KEY_A) == GLFW_PRESS) {
-            camera.moveRight(-moveSpeed);
+            wishMove -= planarRight;
         }
-        if (glfwGetKey(nativeWindow, GLFW_KEY_SPACE) == GLFW_PRESS) {
-            camera.moveUp(moveSpeed);
+
+        if (glm::length(wishMove) > 0.0001f) {
+            wishMove = glm::normalize(wishMove);
         }
-        if (glfwGetKey(nativeWindow, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) {
-            camera.moveUp(-moveSpeed);
-        }
+
+        wantsJump = glfwGetKey(nativeWindow, GLFW_KEY_SPACE) == GLFW_PRESS;
 
         if (glfwGetKey(nativeWindow, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
             glfwSetInputMode(nativeWindow, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
@@ -533,9 +544,12 @@ private:
             glfwSetInputMode(nativeWindow, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
             firstMouse = true;
         }
+
+        return wishMove;
     }
 
     void updateCameraRotationFromMouse() {
+
         GLFWwindow* nativeWindow = window.getNativeHandle();
 
         if (glfwGetInputMode(nativeWindow, GLFW_CURSOR) != GLFW_CURSOR_DISABLED) {
@@ -567,120 +581,16 @@ private:
     }
 
     BlockRaycastHit raycastBlock() const {
-        BlockRaycastHit result;
-
-        const glm::vec3 origin = camera.getPosition();
-        const glm::vec3 direction = glm::normalize(camera.getForward());
-
-        constexpr float maxDistance = 8.0f;
-        constexpr float epsilon = 0.0001f;
-
-        glm::ivec3 cell(
-            static_cast<int>(std::floor(origin.x)),
-            static_cast<int>(std::floor(origin.y)),
-            static_cast<int>(std::floor(origin.z))
+        return physics.raycastBlocks(
+            world,
+            camera.getPosition(),
+            camera.getForward(),
+            8.0f
         );
-
-        const int stepX = (direction.x > 0.0f) ? 1 : (direction.x < 0.0f ? -1 : 0);
-        const int stepY = (direction.y > 0.0f) ? 1 : (direction.y < 0.0f ? -1 : 0);
-        const int stepZ = (direction.z > 0.0f) ? 1 : (direction.z < 0.0f ? -1 : 0);
-
-        const float tDeltaX = (stepX != 0)
-            ? std::abs(1.0f / direction.x)
-            : std::numeric_limits<float>::infinity();
-
-        const float tDeltaY = (stepY != 0)
-            ? std::abs(1.0f / direction.y)
-            : std::numeric_limits<float>::infinity();
-
-        const float tDeltaZ = (stepZ != 0)
-            ? std::abs(1.0f / direction.z)
-            : std::numeric_limits<float>::infinity();
-
-        float tMaxX = std::numeric_limits<float>::infinity();
-        float tMaxY = std::numeric_limits<float>::infinity();
-        float tMaxZ = std::numeric_limits<float>::infinity();
-
-        if (stepX > 0) {
-            tMaxX = (static_cast<float>(cell.x + 1) - origin.x) / direction.x;
-        } else if (stepX < 0) {
-            tMaxX = (origin.x - static_cast<float>(cell.x)) / -direction.x;
-        }
-
-        if (stepY > 0) {
-            tMaxY = (static_cast<float>(cell.y + 1) - origin.y) / direction.y;
-        } else if (stepY < 0) {
-            tMaxY = (origin.y - static_cast<float>(cell.y)) / -direction.y;
-        }
-
-        if (stepZ > 0) {
-            tMaxZ = (static_cast<float>(cell.z + 1) - origin.z) / direction.z;
-        } else if (stepZ < 0) {
-            tMaxZ = (origin.z - static_cast<float>(cell.z)) / -direction.z;
-        }
-
-        glm::ivec3 hitNormal(0);
-
-        for (;;) {
-            BlockType block = BlockType::Air;
-            world.getBlockGlobal(cell.x, cell.y, cell.z, block);
-
-            if (block != BlockType::Air) {
-                result.hit = true;
-                result.block = cell;
-                result.hitNormal = hitNormal;
-                result.placeBlock = cell + hitNormal;
-                result.blockType = block;
-                return result;
-            }
-
-            if (tMaxX < tMaxY) {
-                if (tMaxX < tMaxZ) {
-                    if (tMaxX > maxDistance) {
-                        break;
-                    }
-
-                    cell.x += stepX;
-                    hitNormal = glm::ivec3(-stepX, 0, 0);
-                    tMaxX += tDeltaX;
-                } else {
-                    if (tMaxZ > maxDistance) {
-                        break;
-                    }
-
-                    cell.z += stepZ;
-                    hitNormal = glm::ivec3(0, 0, -stepZ);
-                    tMaxZ += tDeltaZ;
-                }
-            } else {
-                if (tMaxY < tMaxZ) {
-                    if (tMaxY > maxDistance) {
-                        break;
-                    }
-
-                    cell.y += stepY;
-                    hitNormal = glm::ivec3(0, -stepY, 0);
-                    tMaxY += tDeltaY;
-                } else {
-                    if (tMaxZ > maxDistance) {
-                        break;
-                    }
-
-                    cell.z += stepZ;
-                    hitNormal = glm::ivec3(0, 0, -stepZ);
-                    tMaxZ += tDeltaZ;
-                }
-            }
-
-            if (std::min({tMaxX, tMaxY, tMaxZ}) > maxDistance + epsilon) {
-                break;
-            }
-        }
-
-        return result;
     }
 
     void updateSelectedBlock() {
+
         const BlockRaycastHit hit = raycastBlock();
 
         if (hit.hit) {
@@ -729,7 +639,7 @@ private:
                                 targetPlacePos.x,
                                 targetPlacePos.y,
                                 targetPlacePos.z,
-                                selectedBlockType)) {
+                                player.getSelectedBlockType())) {
                             renderDataDirty = true;
                         }
                     }
