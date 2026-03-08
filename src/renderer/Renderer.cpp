@@ -75,8 +75,9 @@ public:
         updateCameraRotationFromMouse();
 
         bool wantsJump = false;
-        const glm::vec3 wishMove = getMovementInput(wantsJump);
-        physics.simulatePlayer(player, world, wishMove, wantsJump);
+        bool wantsSprint = false;
+        const glm::vec3 wishMove = getMovementInput(wantsJump, wantsSprint);
+        physics.simulatePlayer(player, world, wishMove, wantsJump, wantsSprint);
         camera.setPosition(player.getEyePosition());
 
         updateLoadedChunksAroundCamera();
@@ -502,7 +503,7 @@ private:
         createGraphicsPipeline();
     }
 
-    glm::vec3 getMovementInput(bool& wantsJump) {
+    glm::vec3 getMovementInput(bool& wantsJump, bool& wantsSprint) {
         GLFWwindow* nativeWindow = window.getNativeHandle();
 
         glm::vec3 wishMove(0.0f);
@@ -536,6 +537,7 @@ private:
         }
 
         wantsJump = glfwGetKey(nativeWindow, GLFW_KEY_SPACE) == GLFW_PRESS;
+        wantsSprint = glfwGetKey(nativeWindow, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS;
 
         if (glfwGetKey(nativeWindow, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
             glfwSetInputMode(nativeWindow, GLFW_CURSOR, GLFW_CURSOR_NORMAL);

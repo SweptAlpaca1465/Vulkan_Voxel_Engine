@@ -26,7 +26,8 @@ public:
         Player& player,
         const World& world,
         const glm::vec3& wishMove,
-        bool wantsJump
+        bool wantsJump,
+        bool wantsSprint
     ) const;
 
     BlockRaycastHit raycastBlocks(
@@ -39,8 +40,11 @@ public:
 private:
     float gravity;
     float jumpVelocity;
-    float horizontalMoveSpeed;
-    float airControlFactor;
+    float walkSpeed;
+    float sprintSpeed;
+    float groundAcceleration;
+    float airAcceleration;
+    float groundFriction;
 
     PhysicsAABB getPlayerAABBAt(const Player& player, const glm::vec3& position) const;
     bool isSolidBlockAt(const World& world, int x, int y, int z) const;
