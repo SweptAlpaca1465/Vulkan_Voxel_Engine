@@ -70,6 +70,10 @@ const glm::vec3& Camera::getPosition() const {
     return position;
 }
 
+void Camera::setPosition(const glm::vec3& newPosition) {
+    position = newPosition;
+}
+
 const glm::vec3& Camera::getForward() const {
     return forward;
 }
