@@ -18,8 +18,13 @@ public:
 
     void generateFlatTerrain();
 
+    bool isDirty() const;
+    void markDirty();
+    void clearDirty();
+
 private:
-    std::array<BlockType, BlockCount> blocks;
+    std::array<BlockType, BlockCount> blocks{};
+    bool dirty = true;
 
     static int index(int x, int y, int z) {
         return x + SizeX * (z + SizeZ * y);

@@ -69,3 +69,7 @@ glm::mat4 Camera::getProjectionMatrix(float aspectRatio) const {
 const glm::vec3& Camera::getPosition() const {
     return position;
 }
+
+const glm::vec3& Camera::getForward() const {
+    return forward;
+}

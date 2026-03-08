@@ -1,9 +1,9 @@
 #pragma once
 
 #include "renderer/Frustum.hpp"
+#include "world/ChunkCoord.hpp"
 #include "world/ChunkMesh.hpp"
 #include "world/World.hpp"
-#include "world/ChunkCoord.hpp"
 
 #include <cstdint>
 #include <vector>
@@ -24,6 +24,21 @@ struct WorldRenderData {
     std::vector<ChunkRenderSection> sections;
 };
 
-namespace WorldMesher {
-    WorldRenderData buildRenderData(const World& world);
-}
+struct ChunkMeshCacheEntry {
+    ChunkCoord coord;
+    ChunkMesh mesh;
+};
+
+class WorldMesherCache {
+public:
+    void clear();
+    void syncWithWorld(const World& world);
+    bool remeshDirtyChunks(World& world);
+    WorldRenderData buildRenderData() const;
+
+private:
+    std::vector<ChunkMeshCacheEntry> chunkMeshes;
+
+    ChunkMeshCacheEntry* findEntry(int x, int z);
+    const ChunkMeshCacheEntry* findEntry(int x, int z) const;
+};

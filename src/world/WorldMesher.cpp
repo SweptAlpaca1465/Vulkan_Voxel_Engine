@@ -18,18 +18,68 @@ AABB makeChunkBounds(const ChunkCoord& coord) {
 }
 }
 
-namespace WorldMesher {
+void WorldMesherCache::clear() {
+    chunkMeshes.clear();
+}
 
-WorldRenderData buildRenderData(const World& world) {
-    WorldRenderData out;
+ChunkMeshCacheEntry* WorldMesherCache::findEntry(int x, int z) {
+    for (ChunkMeshCacheEntry& entry : chunkMeshes) {
+        if (entry.coord.x == x && entry.coord.z == z) {
+            return &entry;
+        }
+    }
+
+    return nullptr;
+}
+
+const ChunkMeshCacheEntry* WorldMesherCache::findEntry(int x, int z) const {
+    for (const ChunkMeshCacheEntry& entry : chunkMeshes) {
+        if (entry.coord.x == x && entry.coord.z == z) {
+            return &entry;
+        }
+    }
+
+    return nullptr;
+}
+
+void WorldMesherCache::syncWithWorld(const World& world) {
+    std::vector<ChunkMeshCacheEntry> kept;
+    kept.reserve(world.getChunks().size());
 
     for (const WorldChunk& worldChunk : world.getChunks()) {
+        if (const ChunkMeshCacheEntry* existing = findEntry(worldChunk.coord.x, worldChunk.coord.z)) {
+            kept.push_back(*existing);
+        } else {
+            ChunkMeshCacheEntry entry;
+            entry.coord = worldChunk.coord;
+            kept.push_back(entry);
+        }
+    }
+
+    chunkMeshes = std::move(kept);
+}
+
+bool WorldMesherCache::remeshDirtyChunks(World& world) {
+    bool anyRemeshed = false;
+
+    syncWithWorld(world);
+
+    for (WorldChunk& worldChunk : world.getChunksMutable()) {
+        if (!worldChunk.chunk.isDirty()) {
+            continue;
+        }
+
         const WorldChunk* west  = world.findChunk(worldChunk.coord.x - 1, worldChunk.coord.z);
         const WorldChunk* east  = world.findChunk(worldChunk.coord.x + 1, worldChunk.coord.z);
         const WorldChunk* north = world.findChunk(worldChunk.coord.x, worldChunk.coord.z - 1);
         const WorldChunk* south = world.findChunk(worldChunk.coord.x, worldChunk.coord.z + 1);
 
-        ChunkMesh localMesh = ChunkMesher::build(
+        ChunkMeshCacheEntry* cacheEntry = findEntry(worldChunk.coord.x, worldChunk.coord.z);
+        if (!cacheEntry) {
+            continue;
+        }
+
+        cacheEntry->mesh = ChunkMesher::build(
             worldChunk.chunk,
             west  ? &west->chunk  : nullptr,
             east  ? &east->chunk  : nullptr,
@@ -37,24 +87,35 @@ WorldRenderData buildRenderData(const World& world) {
             south ? &south->chunk : nullptr
         );
 
-        ChunkRenderSection section;
-        section.coord = worldChunk.coord;
-        section.bounds = makeChunkBounds(worldChunk.coord);
-        section.firstIndex = static_cast<uint32_t>(out.mesh.indices.size());
-        section.indexCount = static_cast<uint32_t>(localMesh.indices.size());
+        worldChunk.chunk.clearDirty();
+        anyRemeshed = true;
+    }
 
-        const float worldOffsetX = static_cast<float>(worldChunk.coord.x * Chunk::SizeX);
-        const float worldOffsetZ = static_cast<float>(worldChunk.coord.z * Chunk::SizeZ);
+    return anyRemeshed;
+}
+
+WorldRenderData WorldMesherCache::buildRenderData() const {
+    WorldRenderData out;
+
+    for (const ChunkMeshCacheEntry& entry : chunkMeshes) {
+        ChunkRenderSection section;
+        section.coord = entry.coord;
+        section.bounds = makeChunkBounds(entry.coord);
+        section.firstIndex = static_cast<uint32_t>(out.mesh.indices.size());
+        section.indexCount = static_cast<uint32_t>(entry.mesh.indices.size());
+
+        const float worldOffsetX = static_cast<float>(entry.coord.x * Chunk::SizeX);
+        const float worldOffsetZ = static_cast<float>(entry.coord.z * Chunk::SizeZ);
 
         const uint32_t vertexOffset = static_cast<uint32_t>(out.mesh.vertices.size());
 
-        for (Vertex vertex : localMesh.vertices) {
+        for (Vertex vertex : entry.mesh.vertices) {
             vertex.position[0] += worldOffsetX;
             vertex.position[2] += worldOffsetZ;
             out.mesh.vertices.push_back(vertex);
         }
 
-        for (uint32_t index : localMesh.indices) {
+        for (uint32_t index : entry.mesh.indices) {
             out.mesh.indices.push_back(index + vertexOffset);
         }
 
@@ -62,6 +123,4 @@ WorldRenderData buildRenderData(const World& world) {
     }
 
     return out;
-}
-
 }

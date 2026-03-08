@@ -29,10 +29,22 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+struct BlockRaycastHit {
+    bool hit = false;
+
+    glm::ivec3 block{0};
+    glm::ivec3 placeBlock{0};
+
+    BlockType blockType = BlockType::Air;
+};
+
 class Renderer::Impl {
 public:
     bool debugOverlayEnabled = true;
     bool wireframeEnabled = false;
+
+    bool leftMousePressedLastFrame = false;
+    bool rightMousePressedLastFrame = false;
 
     bool f1PressedLastFrame = false;
     bool f3PressedLastFrame = false;
@@ -50,6 +62,89 @@ public:
     int chunkLoadRadius = 4;
     bool f4PressedLastFrame = false;
     bool streamingEnabled = true;
+
+    BlockRaycastHit raycastBlock() const {
+        BlockRaycastHit result;
+
+        const glm::vec3 origin = camera.getPosition();
+        const glm::vec3 direction = glm::normalize(camera.getForward());
+
+        constexpr float maxDistance = 8.0f;
+        constexpr float stepSize = 0.05f;
+
+        glm::ivec3 previousCell(
+            static_cast<int>(std::floor(origin.x)),
+            static_cast<int>(std::floor(origin.y)),
+            static_cast<int>(std::floor(origin.z))
+        );
+
+        for (float t = 0.0f; t <= maxDistance; t += stepSize) {
+            const glm::vec3 samplePos = origin + direction * t;
+
+            const glm::ivec3 currentCell(
+                static_cast<int>(std::floor(samplePos.x)),
+                static_cast<int>(std::floor(samplePos.y)),
+                static_cast<int>(std::floor(samplePos.z))
+            );
+
+            BlockType block = BlockType::Air;
+            world.getBlockGlobal(currentCell.x, currentCell.y, currentCell.z, block);
+
+            if (block != BlockType::Air) {
+                result.hit = true;
+                result.block = currentCell;
+                result.placeBlock = previousCell;
+                result.blockType = block;
+                return result;
+            }
+
+            previousCell = currentCell;
+        }
+
+        return result;
+    }
+
+    void updateBlockInteraction() {
+        GLFWwindow* nativeWindow = window.getNativeHandle();
+
+        if (glfwGetInputMode(nativeWindow, GLFW_CURSOR) != GLFW_CURSOR_DISABLED) {
+            leftMousePressedLastFrame = glfwGetMouseButton(nativeWindow, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            rightMousePressedLastFrame = glfwGetMouseButton(nativeWindow, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+            return;
+        }
+
+        const bool leftPressed = glfwGetMouseButton(nativeWindow, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        const bool rightPressed = glfwGetMouseButton(nativeWindow, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+
+        const bool breakPressedThisFrame = leftPressed && !leftMousePressedLastFrame;
+        const bool placePressedThisFrame = rightPressed && !rightMousePressedLastFrame;
+
+        if (breakPressedThisFrame || placePressedThisFrame) {
+            const BlockRaycastHit hit = raycastBlock();
+
+            if (hit.hit) {
+                if (breakPressedThisFrame) {
+                    if (world.setBlockGlobal(hit.block.x, hit.block.y, hit.block.z, BlockType::Air)) {
+                        renderDataDirty = true;
+                    }
+                }
+
+                if (placePressedThisFrame) {
+                    BlockType existing = BlockType::Air;
+                    world.getBlockGlobal(hit.placeBlock.x, hit.placeBlock.y, hit.placeBlock.z, existing);
+
+                    if (existing == BlockType::Air) {
+                        if (world.setBlockGlobal(hit.placeBlock.x, hit.placeBlock.y, hit.placeBlock.z, BlockType::Stone)) {
+                            renderDataDirty = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        leftMousePressedLastFrame = leftPressed;
+        rightMousePressedLastFrame = rightPressed;
+    }
 
     static int worldToChunkCoord(float worldPos, int chunkSize) {
         return static_cast<int>(std::floor(worldPos / static_cast<float>(chunkSize)));
@@ -81,10 +176,23 @@ public:
         visibleChunkCount = 0;
     }
 
+    void processDirtyChunkMeshes() {
+        worldMesherCache.syncWithWorld(world);
+
+        if (worldMesherCache.remeshDirtyChunks(world)) {
+            renderDataDirty = true;
+        }
+
+        if (renderDataDirty) {
+            rebuildWorldMesh();
+            renderDataDirty = false;
+        }
+    }
+
     void rebuildWorldMesh() {
         destroyMeshBuffers();
 
-        WorldRenderData renderData = WorldMesher::buildRenderData(world);
+        WorldRenderData renderData = worldMesherCache.buildRenderData();
 
         if (renderData.mesh.empty()) {
             return;
@@ -187,7 +295,8 @@ public:
         }
 
         if (worldChanged) {
-            rebuildWorldMesh();
+            worldMesherCache.syncWithWorld(world);
+            renderDataDirty = true;
         }
     }
 
@@ -225,6 +334,9 @@ public:
         f1PressedLastFrame = f1CurrentlyPressed;
         f3PressedLastFrame = f3CurrentlyPressed;
     }
+
+    WorldMesherCache worldMesherCache;
+    bool renderDataDirty = true;
 
     void updateDebugOverlay() {
         frameCounter++;
@@ -275,6 +387,8 @@ public:
         createGraphicsPipeline();
     }
 
+    BlockType selectedBlockType = BlockType::Stone;
+
     void drawFrame() {
         vkWaitForFences(device, 1, &inFlightFence, VK_TRUE, std::numeric_limits<uint64_t>::max());
         vkResetFences(device, 1, &inFlightFence);
@@ -299,6 +413,8 @@ public:
         updateCameraFromInput();
         updateCameraRotationFromMouse();
         updateLoadedChunksAroundCamera();
+        updateBlockInteraction();
+        processDirtyChunkMeshes();
         updateVisibleChunks();
         updateUniformBuffer();
         updateDebugOverlay();
@@ -446,6 +562,20 @@ private:
         createDescriptorSet();
         createCommandBuffers();
         createSyncObjects();
+    }
+
+    void createMeshBuffers() {
+        world.clear();
+        worldMesherCache.clear();
+        hasCenterChunk = false;
+        renderDataDirty = true;
+
+        updateLoadedChunksAroundCamera();
+        processDirtyChunkMeshes();
+
+        if (indexCount == 0) {
+            throw std::runtime_error("Generated world mesh is empty");
+        }
     }
 
     static std::vector<char> readFile(const std::string& filename) {
@@ -1217,16 +1347,6 @@ private:
 
         depthImageView = createImageView(depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
     }
-
-    void createMeshBuffers() {
-    world.clear();
-    hasCenterChunk = false;
-    updateLoadedChunksAroundCamera();
-
-    if (indexCount == 0) {
-        throw std::runtime_error("Generated world mesh is empty");
-    }
-}
 
     void createUniformBuffer() {
         createBuffer(

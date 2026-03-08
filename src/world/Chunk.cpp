@@ -2,6 +2,7 @@
 
 Chunk::Chunk() {
     blocks.fill(BlockType::Air);
+    dirty = true;
 }
 
 BlockType Chunk::get(int x, int y, int z) const {
@@ -17,7 +18,14 @@ void Chunk::set(int x, int y, int z, BlockType type) {
         return;
     }
 
-    blocks[index(x, y, z)] = type;
+    const int i = index(x, y, z);
+
+    if (blocks[i] == type) {
+        return;
+    }
+
+    blocks[i] = type;
+    dirty = true;
 }
 
 void Chunk::generateFlatTerrain() {
@@ -30,4 +38,18 @@ void Chunk::generateFlatTerrain() {
             set(x, 2, z, BlockType::Grass);
         }
     }
+
+    dirty = true;
+}
+
+bool Chunk::isDirty() const {
+    return dirty;
+}
+
+void Chunk::markDirty() {
+    dirty = true;
+}
+
+void Chunk::clearDirty() {
+    dirty = false;
 }
