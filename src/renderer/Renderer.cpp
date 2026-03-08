@@ -38,6 +38,11 @@ struct BlockRaycastHit {
     BlockType blockType = BlockType::Air;
 };
 
+struct DebugVertex {
+    glm::vec3 position;
+    glm::vec3 color;
+};
+
 class Renderer::Impl {
 public:
     bool debugOverlayEnabled = true;
@@ -389,6 +394,65 @@ public:
 
     BlockType selectedBlockType = BlockType::Stone;
 
+    bool hasSelectedBlock = false;
+    glm::ivec3 selectedBlockPos{0};
+
+    void updateSelectedBlock() {
+        const BlockRaycastHit hit = raycastBlock();
+
+        if (hit.hit) {
+            hasSelectedBlock = true;
+            selectedBlockPos = hit.block;
+        } else {
+            hasSelectedBlock = false;
+        }
+    }
+
+    VkPipeline outlinePipeline = VK_NULL_HANDLE;
+    VkPipelineLayout outlinePipelineLayout = VK_NULL_HANDLE;
+
+    VkBuffer outlineVertexBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory outlineVertexBufferMemory = VK_NULL_HANDLE;
+    uint32_t outlineVertexCount = 0;
+
+    VkPipeline crosshairPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout crosshairPipelineLayout = VK_NULL_HANDLE;
+
+    VkBuffer crosshairVertexBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory crosshairVertexBufferMemory = VK_NULL_HANDLE;
+    uint32_t crosshairVertexCount = 0;
+
+    void createCrosshairBuffer() {
+        const float s = 0.006f;
+
+        std::vector<DebugVertex> vertices = {
+            {{-s, -s, 0.0f}, {1.0f, 1.0f, 1.0f}},
+            {{ s, -s, 0.0f}, {1.0f, 1.0f, 1.0f}},
+            {{ s,  s, 0.0f}, {1.0f, 1.0f, 1.0f}},
+
+            {{-s, -s, 0.0f}, {1.0f, 1.0f, 1.0f}},
+            {{ s,  s, 0.0f}, {1.0f, 1.0f, 1.0f}},
+            {{-s,  s, 0.0f}, {1.0f, 1.0f, 1.0f}},
+        };
+
+        crosshairVertexCount = static_cast<uint32_t>(vertices.size());
+
+        const VkDeviceSize bufferSize = sizeof(DebugVertex) * vertices.size();
+
+        createBuffer(
+            bufferSize,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            crosshairVertexBuffer,
+            crosshairVertexBufferMemory
+        );
+
+        void* data = nullptr;
+        vkMapMemory(device, crosshairVertexBufferMemory, 0, bufferSize, 0, &data);
+        std::memcpy(data, vertices.data(), static_cast<size_t>(bufferSize));
+        vkUnmapMemory(device, crosshairVertexBufferMemory);
+    }
+
     void drawFrame() {
         vkWaitForFences(device, 1, &inFlightFence, VK_TRUE, std::numeric_limits<uint64_t>::max());
         vkResetFences(device, 1, &inFlightFence);
@@ -413,6 +477,7 @@ public:
         updateCameraFromInput();
         updateCameraRotationFromMouse();
         updateLoadedChunksAroundCamera();
+        updateSelectedBlock();
         updateBlockInteraction();
         processDirtyChunkMeshes();
         updateVisibleChunks();

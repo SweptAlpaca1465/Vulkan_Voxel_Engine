@@ -4,7 +4,6 @@
 #include <vector>
 
 namespace ChunkMesher {
-
 namespace {
 
 struct MaskCell {
@@ -20,24 +19,38 @@ struct MaskCell {
     }
 };
 
-Vertex makeVertex(float x, float y, float z, BlockType block) {
-    std::array<float, 3> color{};
-
+std::array<float, 3> getBaseColor(BlockType block) {
     switch (block) {
         case BlockType::Grass:
-            color = {0.25f, 0.8f, 0.25f};
-            break;
+            return {0.25f, 0.80f, 0.25f};
         case BlockType::Dirt:
-            color = {0.55f, 0.27f, 0.07f};
-            break;
+            return {0.55f, 0.27f, 0.07f};
         case BlockType::Stone:
-            color = {0.55f, 0.55f, 0.60f};
-            break;
+            return {0.55f, 0.55f, 0.60f};
         case BlockType::Air:
         default:
-            color = {1.0f, 1.0f, 1.0f};
-            break;
+            return {1.0f, 1.0f, 1.0f};
     }
+}
+
+float getFaceShade(int axis, int normal) {
+    if (axis == 1) {
+        return (normal > 0) ? 1.00f : 0.55f; // top / bottom
+    }
+
+    if (axis == 0) {
+        return 0.85f; // x-facing sides
+    }
+
+    return 0.70f; // z-facing sides
+}
+
+Vertex makeVertex(float x, float y, float z, BlockType block, float shade) {
+    std::array<float, 3> color = getBaseColor(block);
+
+    color[0] *= shade;
+    color[1] *= shade;
+    color[2] *= shade;
 
     return Vertex{{x, y, z}, color};
 }
@@ -52,7 +65,9 @@ BlockType sampleBlock(
     const Chunk* east,
     const Chunk* north,
     const Chunk* south,
-    int x, int y, int z
+    int x,
+    int y,
+    int z
 ) {
     if (y < 0 || y >= Chunk::SizeY) {
         return BlockType::Air;
@@ -93,6 +108,7 @@ void addQuad(
     int normal
 ) {
     const uint32_t startIndex = static_cast<uint32_t>(mesh.vertices.size());
+    const float shade = getFaceShade(axis, normal);
 
     std::array<std::array<float, 3>, 4> positions{};
 
@@ -141,7 +157,7 @@ void addQuad(
     }
 
     for (const auto& p : positions) {
-        mesh.vertices.push_back(makeVertex(p[0], p[1], p[2], block));
+        mesh.vertices.push_back(makeVertex(p[0], p[1], p[2], block, shade));
     }
 
     mesh.indices.push_back(startIndex + 0);
@@ -195,11 +211,8 @@ ChunkMesh build(
         for (int slice = 0; slice <= dimA; ++slice) {
             for (int v = 0; v < dimV; ++v) {
                 for (int u = 0; u < dimU; ++u) {
-                    BlockType backBlock =
-                        getBlockByAxis(chunk, west, east, north, south, axis, slice - 1, u, v);
-
-                    BlockType frontBlock =
-                        getBlockByAxis(chunk, west, east, north, south, axis, slice, u, v);
+                    BlockType backBlock = getBlockByAxis(chunk, west, east, north, south, axis, slice - 1, u, v);
+                    BlockType frontBlock = getBlockByAxis(chunk, west, east, north, south, axis, slice, u, v);
 
                     const bool backSolid = isSolid(backBlock);
                     const bool frontSolid = isSolid(frontBlock);
@@ -238,6 +251,7 @@ ChunkMesh build(
 
                     int height = 1;
                     bool canGrow = true;
+
                     while (v + height < dimV && canGrow) {
                         for (int k = 0; k < width; ++k) {
                             if (!(mask[static_cast<size_t>((u + k) + (v + height) * dimU)] == cell)) {
@@ -245,6 +259,7 @@ ChunkMesh build(
                                 break;
                             }
                         }
+
                         if (canGrow) {
                             ++height;
                         }
