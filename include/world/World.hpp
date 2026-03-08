@@ -12,7 +12,11 @@ struct WorldChunk {
 
 class World {
 public:
+    void clear();
     void generateFlatWorld(int radius);
+    void generateChunk(int x, int z);
+    bool hasChunk(int x, int z) const;
+    bool removeChunk(int x, int z);
 
     const std::vector<WorldChunk>& getChunks() const;
     const WorldChunk* findChunk(int x, int z) const;

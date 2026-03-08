@@ -5,6 +5,7 @@
 #include "core/Window.hpp"
 #include "renderer/Vertex.hpp"
 #include "renderer/UniformBufferObject.hpp"
+#include "renderer/Frustum.hpp"
 #include "camera/Camera.hpp"
 #include "world/Chunk.hpp"
 #include "world/World.hpp"
@@ -23,6 +24,7 @@
 #include <string>
 #include <vector>
 #include <sstream>
+#include <cmath>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -42,6 +44,153 @@ public:
     size_t debugVertexCount = 0;
     size_t debugIndexCount = 0;
 
+    ChunkCoord currentCenterChunk{};
+    bool hasCenterChunk = false;
+
+    int chunkLoadRadius = 4;
+    bool f4PressedLastFrame = false;
+    bool streamingEnabled = true;
+
+    static int worldToChunkCoord(float worldPos, int chunkSize) {
+        return static_cast<int>(std::floor(worldPos / static_cast<float>(chunkSize)));
+    }
+
+    void destroyMeshBuffers() {
+        if (indexBuffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(device, indexBuffer, nullptr);
+            indexBuffer = VK_NULL_HANDLE;
+        }
+        if (indexBufferMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(device, indexBufferMemory, nullptr);
+            indexBufferMemory = VK_NULL_HANDLE;
+        }
+        if (vertexBuffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(device, vertexBuffer, nullptr);
+            vertexBuffer = VK_NULL_HANDLE;
+        }
+        if (vertexBufferMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(device, vertexBufferMemory, nullptr);
+            vertexBufferMemory = VK_NULL_HANDLE;
+        }
+
+        indexCount = 0;
+        debugVertexCount = 0;
+        debugIndexCount = 0;
+        chunkSections.clear();
+        visibleChunkIndices.clear();
+        visibleChunkCount = 0;
+    }
+
+    void rebuildWorldMesh() {
+        destroyMeshBuffers();
+
+        WorldRenderData renderData = WorldMesher::buildRenderData(world);
+
+        if (renderData.mesh.empty()) {
+            return;
+        }
+
+        chunkSections = renderData.sections;
+        indexCount = static_cast<uint32_t>(renderData.mesh.indices.size());
+        debugVertexCount = renderData.mesh.vertices.size();
+        debugIndexCount = renderData.mesh.indices.size();
+
+        const VkDeviceSize vertexBufferSize =
+            sizeof(renderData.mesh.vertices[0]) * renderData.mesh.vertices.size();
+        const VkDeviceSize indexBufferSize =
+            sizeof(renderData.mesh.indices[0]) * renderData.mesh.indices.size();
+
+        createBuffer(
+            vertexBufferSize,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            vertexBuffer,
+            vertexBufferMemory
+        );
+
+        createBuffer(
+            indexBufferSize,
+            VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            indexBuffer,
+            indexBufferMemory
+        );
+
+        void* data = nullptr;
+
+        vkMapMemory(device, vertexBufferMemory, 0, vertexBufferSize, 0, &data);
+        std::memcpy(data, renderData.mesh.vertices.data(), static_cast<size_t>(vertexBufferSize));
+        vkUnmapMemory(device, vertexBufferMemory);
+
+        vkMapMemory(device, indexBufferMemory, 0, indexBufferSize, 0, &data);
+        std::memcpy(data, renderData.mesh.indices.data(), static_cast<size_t>(indexBufferSize));
+        vkUnmapMemory(device, indexBufferMemory);
+
+        updateVisibleChunks();
+    }
+
+    void updateLoadedChunksAroundCamera() {
+        if (!streamingEnabled) {
+            return;
+        }
+
+        const glm::vec3 cameraPos = camera.getPosition();
+
+        ChunkCoord newCenterChunk;
+        newCenterChunk.x = worldToChunkCoord(cameraPos.x, Chunk::SizeX);
+        newCenterChunk.z = worldToChunkCoord(cameraPos.z, Chunk::SizeZ);
+
+        if (hasCenterChunk && newCenterChunk == currentCenterChunk) {
+            return;
+        }
+
+        currentCenterChunk = newCenterChunk;
+        hasCenterChunk = true;
+
+        std::vector<ChunkCoord> desiredCoords;
+        desiredCoords.reserve(
+            static_cast<size_t>((chunkLoadRadius * 2 + 1) * (chunkLoadRadius * 2 + 1))
+        );
+
+        for (int dz = -chunkLoadRadius; dz <= chunkLoadRadius; ++dz) {
+            for (int dx = -chunkLoadRadius; dx <= chunkLoadRadius; ++dx) {
+                desiredCoords.push_back({
+                    currentCenterChunk.x + dx,
+                    currentCenterChunk.z + dz
+                });
+            }
+        }
+
+        bool worldChanged = false;
+
+        for (const ChunkCoord& coord : desiredCoords) {
+            if (!world.hasChunk(coord.x, coord.z)) {
+                world.generateChunk(coord.x, coord.z);
+                worldChanged = true;
+            }
+        }
+
+        std::vector<ChunkCoord> toRemove;
+        for (const WorldChunk& worldChunk : world.getChunks()) {
+            const int dx = worldChunk.coord.x - currentCenterChunk.x;
+            const int dz = worldChunk.coord.z - currentCenterChunk.z;
+
+            if (std::abs(dx) > chunkLoadRadius || std::abs(dz) > chunkLoadRadius) {
+                toRemove.push_back(worldChunk.coord);
+            }
+        }
+
+        for (const ChunkCoord& coord : toRemove) {
+            if (world.removeChunk(coord.x, coord.z)) {
+                worldChanged = true;
+            }
+        }
+
+        if (worldChanged) {
+            rebuildWorldMesh();
+        }
+    }
+
     explicit Impl(Window& window)
         : window(window) {
         glfwSetInputMode(window.getNativeHandle(), GLFW_CURSOR, GLFW_CURSOR_DISABLED);
@@ -58,6 +207,7 @@ public:
 
         const bool f1CurrentlyPressed = glfwGetKey(nativeWindow, GLFW_KEY_F1) == GLFW_PRESS;
         const bool f3CurrentlyPressed = glfwGetKey(nativeWindow, GLFW_KEY_F3) == GLFW_PRESS;
+        const bool f4CurrentlyPressed = glfwGetKey(nativeWindow, GLFW_KEY_F4) == GLFW_PRESS;
 
         if (f1CurrentlyPressed && !f1PressedLastFrame) {
             wireframeEnabled = !wireframeEnabled;
@@ -66,6 +216,10 @@ public:
 
         if (f3CurrentlyPressed && !f3PressedLastFrame) {
             debugOverlayEnabled = !debugOverlayEnabled;
+        }
+
+        if (f4CurrentlyPressed && !f4PressedLastFrame) {
+            streamingEnabled = !streamingEnabled;
         }
 
         f1PressedLastFrame = f1CurrentlyPressed;
@@ -91,8 +245,12 @@ public:
                     << " | Vertices: " << debugVertexCount
                     << " | Indices: " << debugIndexCount
                     << " | Triangles: " << (debugIndexCount / 3)
+                    << " | Visible Chunks: " << visibleChunkCount
+                    << "/" << chunkSections.size()
                     << " | Wireframe: " << (wireframeEnabled ? "ON" : "OFF")
-                    << " | Debug: ON";
+                    << " | Debug: ON"
+                    << " | Loaded Chunks: " << chunkSections.size()
+                    << " | Stream: " << (streamingEnabled ? "ON" : "OFF");
 
                 window.setTitle(title.str());
             } else {
@@ -131,7 +289,7 @@ public:
             &imageIndex
         );
 
-                if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+        if (result == VK_ERROR_OUT_OF_DATE_KHR) {
             return;
         } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
             throw std::runtime_error("Failed to acquire swap chain image");
@@ -140,6 +298,8 @@ public:
         updateDebugToggles();
         updateCameraFromInput();
         updateCameraRotationFromMouse();
+        updateLoadedChunksAroundCamera();
+        updateVisibleChunks();
         updateUniformBuffer();
         updateDebugOverlay();
 
@@ -196,6 +356,11 @@ private:
     bool firstMouse = true;
     double lastMouseX = 0.0;
     double lastMouseY = 0.0;
+
+    World world;
+    std::vector<ChunkRenderSection> chunkSections;
+    std::vector<uint32_t> visibleChunkIndices;
+    size_t visibleChunkCount = 0;
 
     VkInstance instance = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
@@ -453,6 +618,39 @@ private:
         const float pitchOffset = static_cast<float>(-deltaY) * sensitivity;
 
         camera.rotate(yawOffset, pitchOffset);
+    }
+
+    void updateVisibleChunks() {
+        visibleChunkIndices.clear();
+
+        if (chunkSections.empty()) {
+            visibleChunkCount = 0;
+            return;
+        }
+
+        const float aspect =
+            static_cast<float>(swapChainExtent.width) /
+            static_cast<float>(swapChainExtent.height);
+
+        const glm::mat4 view = camera.getViewMatrix();
+        const glm::mat4 proj = camera.getProjectionMatrix(aspect);
+        const glm::mat4 viewProjection = proj * view;
+
+        const Frustum frustum = Frustum::fromViewProjection(viewProjection);
+
+        for (uint32_t i = 0; i < static_cast<uint32_t>(chunkSections.size()); ++i) {
+            const ChunkRenderSection& section = chunkSections[i];
+
+            if (section.indexCount == 0) {
+                continue;
+            }
+
+            if (frustum.intersects(section.bounds)) {
+                visibleChunkIndices.push_back(i);
+            }
+        }
+
+        visibleChunkCount = visibleChunkIndices.size();
     }
 
     void createInstance() {
@@ -1021,47 +1219,14 @@ private:
     }
 
     void createMeshBuffers() {
-        World world;
-        world.generateFlatWorld(1); // 1 = 3x3 grid
+    world.clear();
+    hasCenterChunk = false;
+    updateLoadedChunksAroundCamera();
 
-        ChunkMesh mesh = WorldMesher::buildCombinedMesh(world);
-
-        if (mesh.empty()) {
-            throw std::runtime_error("Generated world mesh is empty");
-        }
-
-        indexCount = static_cast<uint32_t>(mesh.indices.size());
-        debugVertexCount = mesh.vertices.size();
-        debugIndexCount = mesh.indices.size();
-
-        VkDeviceSize vertexBufferSize = sizeof(mesh.vertices[0]) * mesh.vertices.size();
-        VkDeviceSize indexBufferSize = sizeof(mesh.indices[0]) * mesh.indices.size();
-
-        createBuffer(
-            vertexBufferSize,
-            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            vertexBuffer,
-            vertexBufferMemory
-        );
-
-        createBuffer(
-            indexBufferSize,
-            VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            indexBuffer,
-            indexBufferMemory
-        );
-
-        void* data = nullptr;
-        vkMapMemory(device, vertexBufferMemory, 0, vertexBufferSize, 0, &data);
-        std::memcpy(data, mesh.vertices.data(), static_cast<size_t>(vertexBufferSize));
-        vkUnmapMemory(device, vertexBufferMemory);
-
-        vkMapMemory(device, indexBufferMemory, 0, indexBufferSize, 0, &data);
-        std::memcpy(data, mesh.indices.data(), static_cast<size_t>(indexBufferSize));
-        vkUnmapMemory(device, indexBufferMemory);
+    if (indexCount == 0) {
+        throw std::runtime_error("Generated world mesh is empty");
     }
+}
 
     void createUniformBuffer() {
         createBuffer(
@@ -1194,7 +1359,22 @@ private:
         vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
         vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
-        vkCmdDrawIndexed(commandBuffer, indexCount, 1, 0, 0, 0);
+        for (uint32_t visibleIndex : visibleChunkIndices) {
+            const ChunkRenderSection& section = chunkSections[visibleIndex];
+
+            if (section.indexCount == 0) {
+                continue;
+            }
+
+            vkCmdDrawIndexed(
+                commandBuffer,
+                section.indexCount,
+                1,
+                section.firstIndex,
+                0,
+                0
+            );
+        }
 
         vkCmdEndRenderPass(commandBuffer);
 

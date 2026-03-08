@@ -9,6 +9,20 @@ find_package(Vulkan REQUIRED)
 find_package(glfw3 REQUIRED)
 find_package(glm REQUIRED)
 
+file(GLOB SHADERS
+    shaders/*.vert
+    shaders/*.frag
+)
+
+foreach(SHADER ${SHADERS})
+    get_filename_component(FILE_NAME ${SHADER} NAME)
+    add_custom_command(
+        OUTPUT shaders/bin/${FILE_NAME}.spv
+        COMMAND glslc ${SHADER} -o shaders/bin/${FILE_NAME}.spv
+        DEPENDS ${SHADER}
+    )
+endforeach()
+
 add_executable(VulkanVoxelEngine
     src/main.cpp
     src/core/App.cpp

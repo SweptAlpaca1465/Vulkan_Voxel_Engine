@@ -7,4 +7,8 @@ struct ChunkCoord {
     bool operator==(const ChunkCoord& other) const {
         return x == other.x && z == other.z;
     }
+
+    bool operator!=(const ChunkCoord& other) const {
+        return !(*this == other);
+    }
 };

@@ -2,7 +2,7 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/constants.hpp>
-#include <glm/geometric.hpp>
+#include <cmath>
 
 Camera::Camera()
     : position(4.0f, 4.0f, 10.0f),
@@ -43,9 +43,9 @@ void Camera::rotate(float yawOffset, float pitchOffset) {
 
 void Camera::updateVectors() {
     glm::vec3 direction;
-    direction.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
-    direction.y = sin(glm::radians(pitch));
-    direction.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
+    direction.x = std::cos(glm::radians(yaw)) * std::cos(glm::radians(pitch));
+    direction.y = std::sin(glm::radians(pitch));
+    direction.z = std::sin(glm::radians(yaw)) * std::cos(glm::radians(pitch));
 
     forward = glm::normalize(direction);
     up = glm::normalize(glm::cross(glm::normalize(glm::cross(forward, worldUp)), forward));
@@ -62,7 +62,10 @@ glm::mat4 Camera::getProjectionMatrix(float aspectRatio) const {
         0.1f,
         100.0f
     );
-
     proj[1][1] *= -1.0f;
     return proj;
+}
+
+const glm::vec3& Camera::getPosition() const {
+    return position;
 }
