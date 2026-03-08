@@ -34,10 +34,10 @@ struct BlockRaycastHit {
 
     glm::ivec3 block{0};
     glm::ivec3 placeBlock{0};
+    glm::ivec3 hitNormal{0};
 
     BlockType blockType = BlockType::Air;
 };
-
 struct DebugVertex {
     glm::vec3 position;
     glm::vec3 color;
@@ -45,266 +45,6 @@ struct DebugVertex {
 
 class Renderer::Impl {
 public:
-    bool debugOverlayEnabled = true;
-    bool wireframeEnabled = false;
-
-    bool leftMousePressedLastFrame = false;
-    bool rightMousePressedLastFrame = false;
-
-    bool f1PressedLastFrame = false;
-    bool f3PressedLastFrame = false;
-
-    double lastFpsTime = 0.0;
-    int frameCounter = 0;
-    int currentFps = 0;
-
-    size_t debugVertexCount = 0;
-    size_t debugIndexCount = 0;
-
-    ChunkCoord currentCenterChunk{};
-    bool hasCenterChunk = false;
-
-    int chunkLoadRadius = 4;
-    bool f4PressedLastFrame = false;
-    bool streamingEnabled = true;
-
-    BlockRaycastHit raycastBlock() const {
-        BlockRaycastHit result;
-
-        const glm::vec3 origin = camera.getPosition();
-        const glm::vec3 direction = glm::normalize(camera.getForward());
-
-        constexpr float maxDistance = 8.0f;
-        constexpr float stepSize = 0.05f;
-
-        glm::ivec3 previousCell(
-            static_cast<int>(std::floor(origin.x)),
-            static_cast<int>(std::floor(origin.y)),
-            static_cast<int>(std::floor(origin.z))
-        );
-
-        for (float t = 0.0f; t <= maxDistance; t += stepSize) {
-            const glm::vec3 samplePos = origin + direction * t;
-
-            const glm::ivec3 currentCell(
-                static_cast<int>(std::floor(samplePos.x)),
-                static_cast<int>(std::floor(samplePos.y)),
-                static_cast<int>(std::floor(samplePos.z))
-            );
-
-            BlockType block = BlockType::Air;
-            world.getBlockGlobal(currentCell.x, currentCell.y, currentCell.z, block);
-
-            if (block != BlockType::Air) {
-                result.hit = true;
-                result.block = currentCell;
-                result.placeBlock = previousCell;
-                result.blockType = block;
-                return result;
-            }
-
-            previousCell = currentCell;
-        }
-
-        return result;
-    }
-
-    void updateBlockInteraction() {
-        GLFWwindow* nativeWindow = window.getNativeHandle();
-
-        if (glfwGetInputMode(nativeWindow, GLFW_CURSOR) != GLFW_CURSOR_DISABLED) {
-            leftMousePressedLastFrame = glfwGetMouseButton(nativeWindow, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-            rightMousePressedLastFrame = glfwGetMouseButton(nativeWindow, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
-            return;
-        }
-
-        const bool leftPressed = glfwGetMouseButton(nativeWindow, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-        const bool rightPressed = glfwGetMouseButton(nativeWindow, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
-
-        const bool breakPressedThisFrame = leftPressed && !leftMousePressedLastFrame;
-        const bool placePressedThisFrame = rightPressed && !rightMousePressedLastFrame;
-
-        if (breakPressedThisFrame || placePressedThisFrame) {
-            const BlockRaycastHit hit = raycastBlock();
-
-            if (hit.hit) {
-                if (breakPressedThisFrame) {
-                    if (world.setBlockGlobal(hit.block.x, hit.block.y, hit.block.z, BlockType::Air)) {
-                        renderDataDirty = true;
-                    }
-                }
-
-                if (placePressedThisFrame) {
-                    BlockType existing = BlockType::Air;
-                    world.getBlockGlobal(hit.placeBlock.x, hit.placeBlock.y, hit.placeBlock.z, existing);
-
-                    if (existing == BlockType::Air) {
-                        if (world.setBlockGlobal(hit.placeBlock.x, hit.placeBlock.y, hit.placeBlock.z, BlockType::Stone)) {
-                            renderDataDirty = true;
-                        }
-                    }
-                }
-            }
-        }
-
-        leftMousePressedLastFrame = leftPressed;
-        rightMousePressedLastFrame = rightPressed;
-    }
-
-    static int worldToChunkCoord(float worldPos, int chunkSize) {
-        return static_cast<int>(std::floor(worldPos / static_cast<float>(chunkSize)));
-    }
-
-    void destroyMeshBuffers() {
-        if (indexBuffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(device, indexBuffer, nullptr);
-            indexBuffer = VK_NULL_HANDLE;
-        }
-        if (indexBufferMemory != VK_NULL_HANDLE) {
-            vkFreeMemory(device, indexBufferMemory, nullptr);
-            indexBufferMemory = VK_NULL_HANDLE;
-        }
-        if (vertexBuffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(device, vertexBuffer, nullptr);
-            vertexBuffer = VK_NULL_HANDLE;
-        }
-        if (vertexBufferMemory != VK_NULL_HANDLE) {
-            vkFreeMemory(device, vertexBufferMemory, nullptr);
-            vertexBufferMemory = VK_NULL_HANDLE;
-        }
-
-        indexCount = 0;
-        debugVertexCount = 0;
-        debugIndexCount = 0;
-        chunkSections.clear();
-        visibleChunkIndices.clear();
-        visibleChunkCount = 0;
-    }
-
-    void processDirtyChunkMeshes() {
-        worldMesherCache.syncWithWorld(world);
-
-        if (worldMesherCache.remeshDirtyChunks(world)) {
-            renderDataDirty = true;
-        }
-
-        if (renderDataDirty) {
-            rebuildWorldMesh();
-            renderDataDirty = false;
-        }
-    }
-
-    void rebuildWorldMesh() {
-        destroyMeshBuffers();
-
-        WorldRenderData renderData = worldMesherCache.buildRenderData();
-
-        if (renderData.mesh.empty()) {
-            return;
-        }
-
-        chunkSections = renderData.sections;
-        indexCount = static_cast<uint32_t>(renderData.mesh.indices.size());
-        debugVertexCount = renderData.mesh.vertices.size();
-        debugIndexCount = renderData.mesh.indices.size();
-
-        const VkDeviceSize vertexBufferSize =
-            sizeof(renderData.mesh.vertices[0]) * renderData.mesh.vertices.size();
-        const VkDeviceSize indexBufferSize =
-            sizeof(renderData.mesh.indices[0]) * renderData.mesh.indices.size();
-
-        createBuffer(
-            vertexBufferSize,
-            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            vertexBuffer,
-            vertexBufferMemory
-        );
-
-        createBuffer(
-            indexBufferSize,
-            VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            indexBuffer,
-            indexBufferMemory
-        );
-
-        void* data = nullptr;
-
-        vkMapMemory(device, vertexBufferMemory, 0, vertexBufferSize, 0, &data);
-        std::memcpy(data, renderData.mesh.vertices.data(), static_cast<size_t>(vertexBufferSize));
-        vkUnmapMemory(device, vertexBufferMemory);
-
-        vkMapMemory(device, indexBufferMemory, 0, indexBufferSize, 0, &data);
-        std::memcpy(data, renderData.mesh.indices.data(), static_cast<size_t>(indexBufferSize));
-        vkUnmapMemory(device, indexBufferMemory);
-
-        updateVisibleChunks();
-    }
-
-    void updateLoadedChunksAroundCamera() {
-        if (!streamingEnabled) {
-            return;
-        }
-
-        const glm::vec3 cameraPos = camera.getPosition();
-
-        ChunkCoord newCenterChunk;
-        newCenterChunk.x = worldToChunkCoord(cameraPos.x, Chunk::SizeX);
-        newCenterChunk.z = worldToChunkCoord(cameraPos.z, Chunk::SizeZ);
-
-        if (hasCenterChunk && newCenterChunk == currentCenterChunk) {
-            return;
-        }
-
-        currentCenterChunk = newCenterChunk;
-        hasCenterChunk = true;
-
-        std::vector<ChunkCoord> desiredCoords;
-        desiredCoords.reserve(
-            static_cast<size_t>((chunkLoadRadius * 2 + 1) * (chunkLoadRadius * 2 + 1))
-        );
-
-        for (int dz = -chunkLoadRadius; dz <= chunkLoadRadius; ++dz) {
-            for (int dx = -chunkLoadRadius; dx <= chunkLoadRadius; ++dx) {
-                desiredCoords.push_back({
-                    currentCenterChunk.x + dx,
-                    currentCenterChunk.z + dz
-                });
-            }
-        }
-
-        bool worldChanged = false;
-
-        for (const ChunkCoord& coord : desiredCoords) {
-            if (!world.hasChunk(coord.x, coord.z)) {
-                world.generateChunk(coord.x, coord.z);
-                worldChanged = true;
-            }
-        }
-
-        std::vector<ChunkCoord> toRemove;
-        for (const WorldChunk& worldChunk : world.getChunks()) {
-            const int dx = worldChunk.coord.x - currentCenterChunk.x;
-            const int dz = worldChunk.coord.z - currentCenterChunk.z;
-
-            if (std::abs(dx) > chunkLoadRadius || std::abs(dz) > chunkLoadRadius) {
-                toRemove.push_back(worldChunk.coord);
-            }
-        }
-
-        for (const ChunkCoord& coord : toRemove) {
-            if (world.removeChunk(coord.x, coord.z)) {
-                worldChanged = true;
-            }
-        }
-
-        if (worldChanged) {
-            worldMesherCache.syncWithWorld(world);
-            renderDataDirty = true;
-        }
-    }
-
     explicit Impl(Window& window)
         : window(window) {
         glfwSetInputMode(window.getNativeHandle(), GLFW_CURSOR, GLFW_CURSOR_DISABLED);
@@ -314,143 +54,6 @@ public:
 
     ~Impl() {
         cleanup();
-    }
-
-    void updateDebugToggles() {
-        GLFWwindow* nativeWindow = window.getNativeHandle();
-
-        const bool f1CurrentlyPressed = glfwGetKey(nativeWindow, GLFW_KEY_F1) == GLFW_PRESS;
-        const bool f3CurrentlyPressed = glfwGetKey(nativeWindow, GLFW_KEY_F3) == GLFW_PRESS;
-        const bool f4CurrentlyPressed = glfwGetKey(nativeWindow, GLFW_KEY_F4) == GLFW_PRESS;
-
-        if (f1CurrentlyPressed && !f1PressedLastFrame) {
-            wireframeEnabled = !wireframeEnabled;
-            recreateGraphicsPipeline();
-        }
-
-        if (f3CurrentlyPressed && !f3PressedLastFrame) {
-            debugOverlayEnabled = !debugOverlayEnabled;
-        }
-
-        if (f4CurrentlyPressed && !f4PressedLastFrame) {
-            streamingEnabled = !streamingEnabled;
-        }
-
-        f1PressedLastFrame = f1CurrentlyPressed;
-        f3PressedLastFrame = f3CurrentlyPressed;
-    }
-
-    WorldMesherCache worldMesherCache;
-    bool renderDataDirty = true;
-
-    void updateDebugOverlay() {
-        frameCounter++;
-
-        const double now = glfwGetTime();
-        const double elapsed = now - lastFpsTime;
-
-        if (elapsed >= 1.0) {
-            currentFps = frameCounter;
-            frameCounter = 0;
-            lastFpsTime = now;
-
-            if (debugOverlayEnabled) {
-                std::ostringstream title;
-                title
-                    << "Vulkan Voxel Engine"
-                    << " | FPS: " << currentFps
-                    << " | Vertices: " << debugVertexCount
-                    << " | Indices: " << debugIndexCount
-                    << " | Triangles: " << (debugIndexCount / 3)
-                    << " | Visible Chunks: " << visibleChunkCount
-                    << "/" << chunkSections.size()
-                    << " | Wireframe: " << (wireframeEnabled ? "ON" : "OFF")
-                    << " | Debug: ON"
-                    << " | Loaded Chunks: " << chunkSections.size()
-                    << " | Stream: " << (streamingEnabled ? "ON" : "OFF");
-
-                window.setTitle(title.str());
-            } else {
-                window.setTitle("Vulkan Voxel Engine");
-            }
-        }
-    }
-
-    void recreateGraphicsPipeline() {
-        vkDeviceWaitIdle(device);
-
-        if (graphicsPipeline != VK_NULL_HANDLE) {
-            vkDestroyPipeline(device, graphicsPipeline, nullptr);
-            graphicsPipeline = VK_NULL_HANDLE;
-        }
-
-        if (pipelineLayout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-            pipelineLayout = VK_NULL_HANDLE;
-        }
-
-        createGraphicsPipeline();
-    }
-
-    BlockType selectedBlockType = BlockType::Stone;
-
-    bool hasSelectedBlock = false;
-    glm::ivec3 selectedBlockPos{0};
-
-    void updateSelectedBlock() {
-        const BlockRaycastHit hit = raycastBlock();
-
-        if (hit.hit) {
-            hasSelectedBlock = true;
-            selectedBlockPos = hit.block;
-        } else {
-            hasSelectedBlock = false;
-        }
-    }
-
-    VkPipeline outlinePipeline = VK_NULL_HANDLE;
-    VkPipelineLayout outlinePipelineLayout = VK_NULL_HANDLE;
-
-    VkBuffer outlineVertexBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory outlineVertexBufferMemory = VK_NULL_HANDLE;
-    uint32_t outlineVertexCount = 0;
-
-    VkPipeline crosshairPipeline = VK_NULL_HANDLE;
-    VkPipelineLayout crosshairPipelineLayout = VK_NULL_HANDLE;
-
-    VkBuffer crosshairVertexBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory crosshairVertexBufferMemory = VK_NULL_HANDLE;
-    uint32_t crosshairVertexCount = 0;
-
-    void createCrosshairBuffer() {
-        const float s = 0.006f;
-
-        std::vector<DebugVertex> vertices = {
-            {{-s, -s, 0.0f}, {1.0f, 1.0f, 1.0f}},
-            {{ s, -s, 0.0f}, {1.0f, 1.0f, 1.0f}},
-            {{ s,  s, 0.0f}, {1.0f, 1.0f, 1.0f}},
-
-            {{-s, -s, 0.0f}, {1.0f, 1.0f, 1.0f}},
-            {{ s,  s, 0.0f}, {1.0f, 1.0f, 1.0f}},
-            {{-s,  s, 0.0f}, {1.0f, 1.0f, 1.0f}},
-        };
-
-        crosshairVertexCount = static_cast<uint32_t>(vertices.size());
-
-        const VkDeviceSize bufferSize = sizeof(DebugVertex) * vertices.size();
-
-        createBuffer(
-            bufferSize,
-            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            crosshairVertexBuffer,
-            crosshairVertexBufferMemory
-        );
-
-        void* data = nullptr;
-        vkMapMemory(device, crosshairVertexBufferMemory, 0, bufferSize, 0, &data);
-        std::memcpy(data, vertices.data(), static_cast<size_t>(bufferSize));
-        vkUnmapMemory(device, crosshairVertexBufferMemory);
     }
 
     void drawFrame() {
@@ -469,7 +72,8 @@ public:
 
         if (result == VK_ERROR_OUT_OF_DATE_KHR) {
             return;
-        } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+        }
+        if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
             throw std::runtime_error("Failed to acquire swap chain image");
         }
 
@@ -481,6 +85,7 @@ public:
         updateBlockInteraction();
         processDirtyChunkMeshes();
         updateVisibleChunks();
+        updateOutlineBuffer();
         updateUniformBuffer();
         updateDebugOverlay();
 
@@ -538,10 +143,39 @@ private:
     double lastMouseX = 0.0;
     double lastMouseY = 0.0;
 
+    bool debugOverlayEnabled = true;
+    bool wireframeEnabled = false;
+    bool streamingEnabled = true;
+
+    bool f1PressedLastFrame = false;
+    bool f3PressedLastFrame = false;
+    bool f4PressedLastFrame = false;
+
+    bool leftMousePressedLastFrame = false;
+    bool rightMousePressedLastFrame = false;
+
+    double lastFpsTime = 0.0;
+    int frameCounter = 0;
+    int currentFps = 0;
+
+    size_t debugVertexCount = 0;
+    size_t debugIndexCount = 0;
+
     World world;
+    WorldMesherCache worldMesherCache;
+    bool renderDataDirty = true;
+
+    ChunkCoord currentCenterChunk{};
+    bool hasCenterChunk = false;
+    int chunkLoadRadius = 4;
+
     std::vector<ChunkRenderSection> chunkSections;
     std::vector<uint32_t> visibleChunkIndices;
     size_t visibleChunkCount = 0;
+
+    BlockType selectedBlockType = BlockType::Stone;
+    bool hasSelectedBlock = false;
+    glm::ivec3 selectedBlockPos{0};
 
     VkInstance instance = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
@@ -566,8 +200,15 @@ private:
     VkFormat depthFormat = VK_FORMAT_D32_SFLOAT;
 
     VkRenderPass renderPass = VK_NULL_HANDLE;
+
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkPipeline graphicsPipeline = VK_NULL_HANDLE;
+
+    VkPipelineLayout outlinePipelineLayout = VK_NULL_HANDLE;
+    VkPipeline outlinePipeline = VK_NULL_HANDLE;
+
+    VkPipelineLayout crosshairPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline crosshairPipeline = VK_NULL_HANDLE;
 
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
@@ -584,6 +225,14 @@ private:
 
     VkBuffer uniformBuffer = VK_NULL_HANDLE;
     VkDeviceMemory uniformBufferMemory = VK_NULL_HANDLE;
+
+    VkBuffer outlineVertexBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory outlineVertexBufferMemory = VK_NULL_HANDLE;
+    uint32_t outlineVertexCount = 0;
+
+    VkBuffer crosshairVertexBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory crosshairVertexBufferMemory = VK_NULL_HANDLE;
+    uint32_t crosshairVertexCount = 0;
 
     VkSemaphore imageAvailableSemaphore = VK_NULL_HANDLE;
     VkSemaphore renderFinishedSemaphore = VK_NULL_HANDLE;
@@ -608,41 +257,6 @@ private:
         std::vector<VkPresentModeKHR> presentModes;
     };
 
-    void initVulkan() {
-        createInstance();
-        createSurface();
-        pickPhysicalDevice();
-        createLogicalDevice();
-        createSwapChain();
-        createImageViews();
-        createRenderPass();
-        createDescriptorSetLayout();
-        createGraphicsPipeline();
-        createCommandPool();
-        createDepthResources();
-        createFramebuffers();
-        createMeshBuffers();
-        createUniformBuffer();
-        createDescriptorPool();
-        createDescriptorSet();
-        createCommandBuffers();
-        createSyncObjects();
-    }
-
-    void createMeshBuffers() {
-        world.clear();
-        worldMesherCache.clear();
-        hasCenterChunk = false;
-        renderDataDirty = true;
-
-        updateLoadedChunksAroundCamera();
-        processDirtyChunkMeshes();
-
-        if (indexCount == 0) {
-            throw std::runtime_error("Generated world mesh is empty");
-        }
-    }
-
     static std::vector<char> readFile(const std::string& filename) {
         std::ifstream file(filename, std::ios::ate | std::ios::binary);
         if (!file.is_open()) {
@@ -659,9 +273,51 @@ private:
         return buffer;
     }
 
+    static int worldToChunkCoord(float worldPos, int chunkSize) {
+        return static_cast<int>(std::floor(worldPos / static_cast<float>(chunkSize)));
+    }
+
+    void initVulkan() {
+        createInstance();
+        createSurface();
+        pickPhysicalDevice();
+        createLogicalDevice();
+        createSwapChain();
+        createImageViews();
+        createRenderPass();
+        createDescriptorSetLayout();
+        createGraphicsPipeline();
+        createOutlinePipeline();
+        createCrosshairPipeline();
+        createCommandPool();
+        createDepthResources();
+        createFramebuffers();
+        createMeshBuffers();
+        createOutlineBuffer();
+        createCrosshairBuffer();
+        createUniformBuffer();
+        createDescriptorPool();
+        createDescriptorSet();
+        createCommandBuffers();
+        createSyncObjects();
+    }
+
     void cleanup() {
         if (device != VK_NULL_HANDLE) {
             vkDeviceWaitIdle(device);
+        }
+
+        if (crosshairVertexBuffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(device, crosshairVertexBuffer, nullptr);
+        }
+        if (crosshairVertexBufferMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(device, crosshairVertexBufferMemory, nullptr);
+        }
+        if (outlineVertexBuffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(device, outlineVertexBuffer, nullptr);
+        }
+        if (outlineVertexBufferMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(device, outlineVertexBufferMemory, nullptr);
         }
 
         if (descriptorPool != VK_NULL_HANDLE) {
@@ -701,6 +357,18 @@ private:
             vkFreeMemory(device, depthImageMemory, nullptr);
         }
 
+        if (crosshairPipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, crosshairPipeline, nullptr);
+        }
+        if (crosshairPipelineLayout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(device, crosshairPipelineLayout, nullptr);
+        }
+        if (outlinePipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, outlinePipeline, nullptr);
+        }
+        if (outlinePipelineLayout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(device, outlinePipelineLayout, nullptr);
+        }
         if (graphicsPipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(device, graphicsPipeline, nullptr);
         }
@@ -749,6 +417,89 @@ private:
         if (instance != VK_NULL_HANDLE) {
             vkDestroyInstance(instance, nullptr);
         }
+    }
+
+    void updateDebugToggles() {
+        GLFWwindow* nativeWindow = window.getNativeHandle();
+
+        const bool f1CurrentlyPressed = glfwGetKey(nativeWindow, GLFW_KEY_F1) == GLFW_PRESS;
+        const bool f3CurrentlyPressed = glfwGetKey(nativeWindow, GLFW_KEY_F3) == GLFW_PRESS;
+        const bool f4CurrentlyPressed = glfwGetKey(nativeWindow, GLFW_KEY_F4) == GLFW_PRESS;
+
+        if (f1CurrentlyPressed && !f1PressedLastFrame) {
+            wireframeEnabled = !wireframeEnabled;
+            recreateGraphicsPipeline();
+        }
+
+        if (f3CurrentlyPressed && !f3PressedLastFrame) {
+            debugOverlayEnabled = !debugOverlayEnabled;
+        }
+
+        if (f4CurrentlyPressed && !f4PressedLastFrame) {
+            streamingEnabled = !streamingEnabled;
+        }
+
+        if (glfwGetKey(nativeWindow, GLFW_KEY_1) == GLFW_PRESS) {
+            selectedBlockType = BlockType::Grass;
+        }
+        if (glfwGetKey(nativeWindow, GLFW_KEY_2) == GLFW_PRESS) {
+            selectedBlockType = BlockType::Dirt;
+        }
+        if (glfwGetKey(nativeWindow, GLFW_KEY_3) == GLFW_PRESS) {
+            selectedBlockType = BlockType::Stone;
+        }
+
+        f1PressedLastFrame = f1CurrentlyPressed;
+        f3PressedLastFrame = f3CurrentlyPressed;
+        f4PressedLastFrame = f4CurrentlyPressed;
+    }
+
+    void updateDebugOverlay() {
+        frameCounter++;
+
+        const double now = glfwGetTime();
+        const double elapsed = now - lastFpsTime;
+
+        if (elapsed >= 1.0) {
+            currentFps = frameCounter;
+            frameCounter = 0;
+            lastFpsTime = now;
+
+            if (debugOverlayEnabled) {
+                std::ostringstream title;
+                title
+                    << "Vulkan Voxel Engine"
+                    << " | FPS: " << currentFps
+                    << " | Vertices: " << debugVertexCount
+                    << " | Indices: " << debugIndexCount
+                    << " | Triangles: " << (debugIndexCount / 3)
+                    << " | Visible Chunks: " << visibleChunkCount
+                    << "/" << chunkSections.size()
+                    << " | Loaded Chunks: " << chunkSections.size()
+                    << " | Stream: " << (streamingEnabled ? "ON" : "OFF")
+                    << " | Wireframe: " << (wireframeEnabled ? "ON" : "OFF")
+                    << " | Debug: ON";
+
+                window.setTitle(title.str());
+            } else {
+                window.setTitle("Vulkan Voxel Engine");
+            }
+        }
+    }
+
+    void recreateGraphicsPipeline() {
+        vkDeviceWaitIdle(device);
+
+        if (graphicsPipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, graphicsPipeline, nullptr);
+            graphicsPipeline = VK_NULL_HANDLE;
+        }
+        if (pipelineLayout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+            pipelineLayout = VK_NULL_HANDLE;
+        }
+
+        createGraphicsPipeline();
     }
 
     void updateCameraFromInput() {
@@ -815,6 +566,331 @@ private:
         camera.rotate(yawOffset, pitchOffset);
     }
 
+    BlockRaycastHit raycastBlock() const {
+        BlockRaycastHit result;
+
+        const glm::vec3 origin = camera.getPosition();
+        const glm::vec3 direction = glm::normalize(camera.getForward());
+
+        constexpr float maxDistance = 8.0f;
+        constexpr float epsilon = 0.0001f;
+
+        glm::ivec3 cell(
+            static_cast<int>(std::floor(origin.x)),
+            static_cast<int>(std::floor(origin.y)),
+            static_cast<int>(std::floor(origin.z))
+        );
+
+        const int stepX = (direction.x > 0.0f) ? 1 : (direction.x < 0.0f ? -1 : 0);
+        const int stepY = (direction.y > 0.0f) ? 1 : (direction.y < 0.0f ? -1 : 0);
+        const int stepZ = (direction.z > 0.0f) ? 1 : (direction.z < 0.0f ? -1 : 0);
+
+        const float tDeltaX = (stepX != 0)
+            ? std::abs(1.0f / direction.x)
+            : std::numeric_limits<float>::infinity();
+
+        const float tDeltaY = (stepY != 0)
+            ? std::abs(1.0f / direction.y)
+            : std::numeric_limits<float>::infinity();
+
+        const float tDeltaZ = (stepZ != 0)
+            ? std::abs(1.0f / direction.z)
+            : std::numeric_limits<float>::infinity();
+
+        float tMaxX = std::numeric_limits<float>::infinity();
+        float tMaxY = std::numeric_limits<float>::infinity();
+        float tMaxZ = std::numeric_limits<float>::infinity();
+
+        if (stepX > 0) {
+            tMaxX = (static_cast<float>(cell.x + 1) - origin.x) / direction.x;
+        } else if (stepX < 0) {
+            tMaxX = (origin.x - static_cast<float>(cell.x)) / -direction.x;
+        }
+
+        if (stepY > 0) {
+            tMaxY = (static_cast<float>(cell.y + 1) - origin.y) / direction.y;
+        } else if (stepY < 0) {
+            tMaxY = (origin.y - static_cast<float>(cell.y)) / -direction.y;
+        }
+
+        if (stepZ > 0) {
+            tMaxZ = (static_cast<float>(cell.z + 1) - origin.z) / direction.z;
+        } else if (stepZ < 0) {
+            tMaxZ = (origin.z - static_cast<float>(cell.z)) / -direction.z;
+        }
+
+        glm::ivec3 hitNormal(0);
+
+        for (;;) {
+            BlockType block = BlockType::Air;
+            world.getBlockGlobal(cell.x, cell.y, cell.z, block);
+
+            if (block != BlockType::Air) {
+                result.hit = true;
+                result.block = cell;
+                result.hitNormal = hitNormal;
+                result.placeBlock = cell + hitNormal;
+                result.blockType = block;
+                return result;
+            }
+
+            if (tMaxX < tMaxY) {
+                if (tMaxX < tMaxZ) {
+                    if (tMaxX > maxDistance) {
+                        break;
+                    }
+
+                    cell.x += stepX;
+                    hitNormal = glm::ivec3(-stepX, 0, 0);
+                    tMaxX += tDeltaX;
+                } else {
+                    if (tMaxZ > maxDistance) {
+                        break;
+                    }
+
+                    cell.z += stepZ;
+                    hitNormal = glm::ivec3(0, 0, -stepZ);
+                    tMaxZ += tDeltaZ;
+                }
+            } else {
+                if (tMaxY < tMaxZ) {
+                    if (tMaxY > maxDistance) {
+                        break;
+                    }
+
+                    cell.y += stepY;
+                    hitNormal = glm::ivec3(0, -stepY, 0);
+                    tMaxY += tDeltaY;
+                } else {
+                    if (tMaxZ > maxDistance) {
+                        break;
+                    }
+
+                    cell.z += stepZ;
+                    hitNormal = glm::ivec3(0, 0, -stepZ);
+                    tMaxZ += tDeltaZ;
+                }
+            }
+
+            if (std::min({tMaxX, tMaxY, tMaxZ}) > maxDistance + epsilon) {
+                break;
+            }
+        }
+
+        return result;
+    }
+
+    void updateSelectedBlock() {
+        const BlockRaycastHit hit = raycastBlock();
+
+        if (hit.hit) {
+            hasSelectedBlock = true;
+            selectedBlockPos = hit.block;
+        } else {
+            hasSelectedBlock = false;
+        }
+    }
+
+    void updateBlockInteraction() {
+        GLFWwindow* nativeWindow = window.getNativeHandle();
+
+        if (glfwGetInputMode(nativeWindow, GLFW_CURSOR) != GLFW_CURSOR_DISABLED) {
+            leftMousePressedLastFrame =
+                glfwGetMouseButton(nativeWindow, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            rightMousePressedLastFrame =
+                glfwGetMouseButton(nativeWindow, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+            return;
+        }
+
+        const bool leftPressed = glfwGetMouseButton(nativeWindow, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        const bool rightPressed = glfwGetMouseButton(nativeWindow, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+
+        const bool breakPressedThisFrame = leftPressed && !leftMousePressedLastFrame;
+        const bool placePressedThisFrame = rightPressed && !rightMousePressedLastFrame;
+
+        if (breakPressedThisFrame || placePressedThisFrame) {
+            const BlockRaycastHit hit = raycastBlock();
+
+            if (hit.hit) {
+                if (breakPressedThisFrame) {
+                    if (world.setBlockGlobal(hit.block.x, hit.block.y, hit.block.z, BlockType::Air)) {
+                        renderDataDirty = true;
+                    }
+                }
+
+                if (placePressedThisFrame) {
+                    const glm::ivec3 targetPlacePos = hit.block + hit.hitNormal;
+                    
+                    BlockType existing = BlockType::Air;
+                    world.getBlockGlobal(targetPlacePos.x, targetPlacePos.y, targetPlacePos.z, existing);
+
+                    if (existing == BlockType::Air) {
+                        if (world.setBlockGlobal(
+                                targetPlacePos.x,
+                                targetPlacePos.y,
+                                targetPlacePos.z,
+                                selectedBlockType)) {
+                            renderDataDirty = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        leftMousePressedLastFrame = leftPressed;
+        rightMousePressedLastFrame = rightPressed;
+    }
+
+    void destroyMeshBuffers() {
+        if (indexBuffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(device, indexBuffer, nullptr);
+            indexBuffer = VK_NULL_HANDLE;
+        }
+        if (indexBufferMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(device, indexBufferMemory, nullptr);
+            indexBufferMemory = VK_NULL_HANDLE;
+        }
+        if (vertexBuffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(device, vertexBuffer, nullptr);
+            vertexBuffer = VK_NULL_HANDLE;
+        }
+        if (vertexBufferMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(device, vertexBufferMemory, nullptr);
+            vertexBufferMemory = VK_NULL_HANDLE;
+        }
+
+        indexCount = 0;
+        debugVertexCount = 0;
+        debugIndexCount = 0;
+        chunkSections.clear();
+        visibleChunkIndices.clear();
+        visibleChunkCount = 0;
+    }
+
+    void rebuildWorldMesh() {
+        destroyMeshBuffers();
+
+        WorldRenderData renderData = worldMesherCache.buildRenderData();
+
+        if (renderData.mesh.empty()) {
+            return;
+        }
+
+        chunkSections = renderData.sections;
+        indexCount = static_cast<uint32_t>(renderData.mesh.indices.size());
+        debugVertexCount = renderData.mesh.vertices.size();
+        debugIndexCount = renderData.mesh.indices.size();
+
+        const VkDeviceSize vertexBufferSize =
+            sizeof(renderData.mesh.vertices[0]) * renderData.mesh.vertices.size();
+        const VkDeviceSize indexBufferSize =
+            sizeof(renderData.mesh.indices[0]) * renderData.mesh.indices.size();
+
+        createBuffer(
+            vertexBufferSize,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            vertexBuffer,
+            vertexBufferMemory
+        );
+
+        createBuffer(
+            indexBufferSize,
+            VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            indexBuffer,
+            indexBufferMemory
+        );
+
+        void* data = nullptr;
+
+        vkMapMemory(device, vertexBufferMemory, 0, vertexBufferSize, 0, &data);
+        std::memcpy(data, renderData.mesh.vertices.data(), static_cast<size_t>(vertexBufferSize));
+        vkUnmapMemory(device, vertexBufferMemory);
+
+        vkMapMemory(device, indexBufferMemory, 0, indexBufferSize, 0, &data);
+        std::memcpy(data, renderData.mesh.indices.data(), static_cast<size_t>(indexBufferSize));
+        vkUnmapMemory(device, indexBufferMemory);
+
+        updateVisibleChunks();
+    }
+
+    void processDirtyChunkMeshes() {
+        worldMesherCache.syncWithWorld(world);
+
+        if (worldMesherCache.remeshDirtyChunks(world)) {
+            renderDataDirty = true;
+        }
+
+        if (renderDataDirty) {
+            rebuildWorldMesh();
+            renderDataDirty = false;
+        }
+    }
+
+    void updateLoadedChunksAroundCamera() {
+        if (!streamingEnabled) {
+            return;
+        }
+
+        const glm::vec3 cameraPos = camera.getPosition();
+
+        ChunkCoord newCenterChunk;
+        newCenterChunk.x = worldToChunkCoord(cameraPos.x, Chunk::SizeX);
+        newCenterChunk.z = worldToChunkCoord(cameraPos.z, Chunk::SizeZ);
+
+        if (hasCenterChunk && newCenterChunk == currentCenterChunk) {
+            return;
+        }
+
+        currentCenterChunk = newCenterChunk;
+        hasCenterChunk = true;
+
+        std::vector<ChunkCoord> desiredCoords;
+        desiredCoords.reserve(
+            static_cast<size_t>((chunkLoadRadius * 2 + 1) * (chunkLoadRadius * 2 + 1))
+        );
+
+        for (int dz = -chunkLoadRadius; dz <= chunkLoadRadius; ++dz) {
+            for (int dx = -chunkLoadRadius; dx <= chunkLoadRadius; ++dx) {
+                desiredCoords.push_back({
+                    currentCenterChunk.x + dx,
+                    currentCenterChunk.z + dz
+                });
+            }
+        }
+
+        bool worldChanged = false;
+
+        for (const ChunkCoord& coord : desiredCoords) {
+            if (!world.hasChunk(coord.x, coord.z)) {
+                world.generateChunk(coord.x, coord.z);
+                worldChanged = true;
+            }
+        }
+
+        std::vector<ChunkCoord> toRemove;
+        for (const WorldChunk& worldChunk : world.getChunks()) {
+            const int dx = worldChunk.coord.x - currentCenterChunk.x;
+            const int dz = worldChunk.coord.z - currentCenterChunk.z;
+
+            if (std::abs(dx) > chunkLoadRadius || std::abs(dz) > chunkLoadRadius) {
+                toRemove.push_back(worldChunk.coord);
+            }
+        }
+
+        for (const ChunkCoord& coord : toRemove) {
+            if (world.removeChunk(coord.x, coord.z)) {
+                worldChanged = true;
+            }
+        }
+
+        if (worldChanged) {
+            worldMesherCache.syncWithWorld(world);
+            renderDataDirty = true;
+        }
+    }
+
     void updateVisibleChunks() {
         visibleChunkIndices.clear();
 
@@ -846,6 +922,527 @@ private:
         }
 
         visibleChunkCount = visibleChunkIndices.size();
+    }
+
+    void createMeshBuffers() {
+        world.clear();
+        worldMesherCache.clear();
+        hasCenterChunk = false;
+        renderDataDirty = true;
+
+        updateLoadedChunksAroundCamera();
+        processDirtyChunkMeshes();
+
+        if (indexCount == 0) {
+            throw std::runtime_error("Generated world mesh is empty");
+        }
+    }
+
+    void createOutlineBuffer() {
+        constexpr VkDeviceSize bufferSize = sizeof(DebugVertex) * 24;
+
+        createBuffer(
+            bufferSize,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            outlineVertexBuffer,
+            outlineVertexBufferMemory
+        );
+
+        std::array<DebugVertex, 24> emptyVertices{};
+        void* data = nullptr;
+        vkMapMemory(device, outlineVertexBufferMemory, 0, bufferSize, 0, &data);
+        std::memcpy(data, emptyVertices.data(), static_cast<size_t>(bufferSize));
+        vkUnmapMemory(device, outlineVertexBufferMemory);
+
+        outlineVertexCount = 0;
+    }
+
+    void updateOutlineBuffer() {
+        outlineVertexCount = 0;
+
+        if (!hasSelectedBlock || outlineVertexBuffer == VK_NULL_HANDLE) {
+            return;
+        }
+
+        const float x = static_cast<float>(selectedBlockPos.x);
+        const float y = static_cast<float>(selectedBlockPos.y);
+        const float z = static_cast<float>(selectedBlockPos.z);
+        const float e = 0.002f;
+
+        const glm::vec3 p000(x - e,     y - e,     z - e);
+        const glm::vec3 p100(x + 1 + e, y - e,     z - e);
+        const glm::vec3 p010(x - e,     y + 1 + e, z - e);
+        const glm::vec3 p110(x + 1 + e, y + 1 + e, z - e);
+
+        const glm::vec3 p001(x - e,     y - e,     z + 1 + e);
+        const glm::vec3 p101(x + 1 + e, y - e,     z + 1 + e);
+        const glm::vec3 p011(x - e,     y + 1 + e, z + 1 + e);
+        const glm::vec3 p111(x + 1 + e, y + 1 + e, z + 1 + e);
+
+        const glm::vec3 c(0.0f, 0.0f, 0.0f);
+
+        const std::array<DebugVertex, 24> vertices = {{
+            {p000, c}, {p100, c},
+            {p100, c}, {p110, c},
+            {p110, c}, {p010, c},
+            {p010, c}, {p000, c},
+
+            {p001, c}, {p101, c},
+            {p101, c}, {p111, c},
+            {p111, c}, {p011, c},
+            {p011, c}, {p001, c},
+
+            {p000, c}, {p001, c},
+            {p100, c}, {p101, c},
+            {p110, c}, {p111, c},
+            {p010, c}, {p011, c}
+        }};
+
+        void* data = nullptr;
+        vkMapMemory(device, outlineVertexBufferMemory, 0, sizeof(vertices), 0, &data);
+        std::memcpy(data, vertices.data(), sizeof(vertices));
+        vkUnmapMemory(device, outlineVertexBufferMemory);
+
+        outlineVertexCount = static_cast<uint32_t>(vertices.size());
+    }
+
+    void createCrosshairBuffer() {
+        const float s = 0.006f;
+
+        const std::array<DebugVertex, 6> vertices = {{
+            {{-s, -s, 0.0f}, {1.0f, 1.0f, 1.0f}},
+            {{ s, -s, 0.0f}, {1.0f, 1.0f, 1.0f}},
+            {{ s,  s, 0.0f}, {1.0f, 1.0f, 1.0f}},
+
+            {{-s, -s, 0.0f}, {1.0f, 1.0f, 1.0f}},
+            {{ s,  s, 0.0f}, {1.0f, 1.0f, 1.0f}},
+            {{-s,  s, 0.0f}, {1.0f, 1.0f, 1.0f}}
+        }};
+
+        crosshairVertexCount = static_cast<uint32_t>(vertices.size());
+
+        const VkDeviceSize bufferSize = sizeof(vertices);
+
+        createBuffer(
+            bufferSize,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            crosshairVertexBuffer,
+            crosshairVertexBufferMemory
+        );
+
+        void* data = nullptr;
+        vkMapMemory(device, crosshairVertexBufferMemory, 0, bufferSize, 0, &data);
+        std::memcpy(data, vertices.data(), static_cast<size_t>(bufferSize));
+        vkUnmapMemory(device, crosshairVertexBufferMemory);
+    }
+
+    VkShaderModule createShaderModule(const std::vector<char>& code) {
+        VkShaderModuleCreateInfo createInfo{};
+        createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        createInfo.codeSize = code.size();
+        createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+
+        VkShaderModule shaderModule = VK_NULL_HANDLE;
+        if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create shader module");
+        }
+
+        return shaderModule;
+    }
+
+    void fillDebugVertexInput(
+        VkVertexInputBindingDescription& bindingDescription,
+        std::array<VkVertexInputAttributeDescription, 2>& attributeDescriptions,
+        VkPipelineVertexInputStateCreateInfo& vertexInputInfo
+    ) {
+        bindingDescription.binding = 0;
+        bindingDescription.stride = sizeof(DebugVertex);
+        bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+        attributeDescriptions[0].binding = 0;
+        attributeDescriptions[0].location = 0;
+        attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attributeDescriptions[0].offset = offsetof(DebugVertex, position);
+
+        attributeDescriptions[1].binding = 0;
+        attributeDescriptions[1].location = 1;
+        attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attributeDescriptions[1].offset = offsetof(DebugVertex, color);
+
+        vertexInputInfo = {};
+        vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        vertexInputInfo.vertexBindingDescriptionCount = 1;
+        vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+        vertexInputInfo.vertexAttributeDescriptionCount =
+            static_cast<uint32_t>(attributeDescriptions.size());
+        vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+    }
+
+    void createGraphicsPipeline() {
+        auto vertShaderCode = readFile("shaders/bin/basic.vert.spv");
+        auto fragShaderCode = readFile("shaders/bin/basic.frag.spv");
+
+        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+        VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+        vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        vertShaderStageInfo.module = vertShaderModule;
+        vertShaderStageInfo.pName = "main";
+
+        VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+        fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragShaderStageInfo.module = fragShaderModule;
+        fragShaderStageInfo.pName = "main";
+
+        VkPipelineShaderStageCreateInfo shaderStages[] = {
+            vertShaderStageInfo,
+            fragShaderStageInfo
+        };
+
+        VkVertexInputBindingDescription bindingDescription{};
+        bindingDescription.binding = 0;
+        bindingDescription.stride = sizeof(Vertex);
+        bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+        std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
+        attributeDescriptions[0].binding = 0;
+        attributeDescriptions[0].location = 0;
+        attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attributeDescriptions[0].offset = offsetof(Vertex, position);
+
+        attributeDescriptions[1].binding = 0;
+        attributeDescriptions[1].location = 1;
+        attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attributeDescriptions[1].offset = offsetof(Vertex, color);
+
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+        vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        vertexInputInfo.vertexBindingDescriptionCount = 1;
+        vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+        vertexInputInfo.vertexAttributeDescriptionCount =
+            static_cast<uint32_t>(attributeDescriptions.size());
+        vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+        inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        VkViewport viewport{};
+        viewport.x = 0.0f;
+        viewport.y = 0.0f;
+        viewport.width = static_cast<float>(swapChainExtent.width);
+        viewport.height = static_cast<float>(swapChainExtent.height);
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+
+        VkRect2D scissor{};
+        scissor.offset = {0, 0};
+        scissor.extent = swapChainExtent;
+
+        VkPipelineViewportStateCreateInfo viewportState{};
+        viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewportState.viewportCount = 1;
+        viewportState.pViewports = &viewport;
+        viewportState.scissorCount = 1;
+        viewportState.pScissors = &scissor;
+
+        VkPipelineRasterizationStateCreateInfo rasterizer{};
+        rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rasterizer.polygonMode = wireframeEnabled ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
+        rasterizer.lineWidth = 1.0f;
+        rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+        VkPipelineMultisampleStateCreateInfo multisampling{};
+        multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        VkPipelineDepthStencilStateCreateInfo depthStencil{};
+        depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        depthStencil.depthTestEnable = VK_TRUE;
+        depthStencil.depthWriteEnable = VK_TRUE;
+        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+        depthStencil.depthBoundsTestEnable = VK_FALSE;
+        depthStencil.stencilTestEnable = VK_FALSE;
+
+        VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+        colorBlendAttachment.colorWriteMask =
+            VK_COLOR_COMPONENT_R_BIT |
+            VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT |
+            VK_COLOR_COMPONENT_A_BIT;
+
+        VkPipelineColorBlendStateCreateInfo colorBlending{};
+        colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        colorBlending.attachmentCount = 1;
+        colorBlending.pAttachments = &colorBlendAttachment;
+
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutInfo.setLayoutCount = 1;
+        pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
+
+        if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create pipeline layout");
+        }
+
+        VkGraphicsPipelineCreateInfo pipelineInfo{};
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = shaderStages;
+        pipelineInfo.pVertexInputState = &vertexInputInfo;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterizer;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pDepthStencilState = &depthStencil;
+        pipelineInfo.pColorBlendState = &colorBlending;
+        pipelineInfo.layout = pipelineLayout;
+        pipelineInfo.renderPass = renderPass;
+        pipelineInfo.subpass = 0;
+
+        if (vkCreateGraphicsPipelines(
+                device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &graphicsPipeline) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create graphics pipeline");
+        }
+
+        vkDestroyShaderModule(device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(device, vertShaderModule, nullptr);
+    }
+
+    void createOutlinePipeline() {
+        auto vertShaderCode = readFile("shaders/bin/debug_line.vert.spv");
+        auto fragShaderCode = readFile("shaders/bin/debug_line.frag.spv");
+
+        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+        VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+        vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        vertShaderStageInfo.module = vertShaderModule;
+        vertShaderStageInfo.pName = "main";
+
+        VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+        fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragShaderStageInfo.module = fragShaderModule;
+        fragShaderStageInfo.pName = "main";
+
+        VkPipelineShaderStageCreateInfo shaderStages[] = {
+            vertShaderStageInfo,
+            fragShaderStageInfo
+        };
+
+        VkVertexInputBindingDescription bindingDescription{};
+        std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+        fillDebugVertexInput(bindingDescription, attributeDescriptions, vertexInputInfo);
+
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+        inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+
+        VkViewport viewport{};
+        viewport.x = 0.0f;
+        viewport.y = 0.0f;
+        viewport.width = static_cast<float>(swapChainExtent.width);
+        viewport.height = static_cast<float>(swapChainExtent.height);
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+
+        VkRect2D scissor{};
+        scissor.offset = {0, 0};
+        scissor.extent = swapChainExtent;
+
+        VkPipelineViewportStateCreateInfo viewportState{};
+        viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewportState.viewportCount = 1;
+        viewportState.pViewports = &viewport;
+        viewportState.scissorCount = 1;
+        viewportState.pScissors = &scissor;
+
+        VkPipelineRasterizationStateCreateInfo rasterizer{};
+        rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterizer.lineWidth = 1.0f;
+        rasterizer.cullMode = VK_CULL_MODE_NONE;
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+        VkPipelineMultisampleStateCreateInfo multisampling{};
+        multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        VkPipelineDepthStencilStateCreateInfo depthStencil{};
+        depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        depthStencil.depthTestEnable = VK_TRUE;
+        depthStencil.depthWriteEnable = VK_FALSE;
+        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        depthStencil.depthBoundsTestEnable = VK_FALSE;
+        depthStencil.stencilTestEnable = VK_FALSE;
+
+        VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+        colorBlendAttachment.colorWriteMask =
+            VK_COLOR_COMPONENT_R_BIT |
+            VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT |
+            VK_COLOR_COMPONENT_A_BIT;
+
+        VkPipelineColorBlendStateCreateInfo colorBlending{};
+        colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        colorBlending.attachmentCount = 1;
+        colorBlending.pAttachments = &colorBlendAttachment;
+
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutInfo.setLayoutCount = 1;
+        pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
+
+        if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &outlinePipelineLayout) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create outline pipeline layout");
+        }
+
+        VkGraphicsPipelineCreateInfo pipelineInfo{};
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = shaderStages;
+        pipelineInfo.pVertexInputState = &vertexInputInfo;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterizer;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pDepthStencilState = &depthStencil;
+        pipelineInfo.pColorBlendState = &colorBlending;
+        pipelineInfo.layout = outlinePipelineLayout;
+        pipelineInfo.renderPass = renderPass;
+        pipelineInfo.subpass = 0;
+
+        if (vkCreateGraphicsPipelines(
+                device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &outlinePipeline) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create outline pipeline");
+        }
+
+        vkDestroyShaderModule(device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(device, vertShaderModule, nullptr);
+    }
+
+    void createCrosshairPipeline() {
+        auto vertShaderCode = readFile("shaders/bin/crosshair.vert.spv");
+        auto fragShaderCode = readFile("shaders/bin/crosshair.frag.spv");
+
+        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+        VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+        vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        vertShaderStageInfo.module = vertShaderModule;
+        vertShaderStageInfo.pName = "main";
+
+        VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+        fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragShaderStageInfo.module = fragShaderModule;
+        fragShaderStageInfo.pName = "main";
+
+        VkPipelineShaderStageCreateInfo shaderStages[] = {
+            vertShaderStageInfo,
+            fragShaderStageInfo
+        };
+
+        VkVertexInputBindingDescription bindingDescription{};
+        std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+        fillDebugVertexInput(bindingDescription, attributeDescriptions, vertexInputInfo);
+
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+        inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        VkViewport viewport{};
+        viewport.x = 0.0f;
+        viewport.y = 0.0f;
+        viewport.width = static_cast<float>(swapChainExtent.width);
+        viewport.height = static_cast<float>(swapChainExtent.height);
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+
+        VkRect2D scissor{};
+        scissor.offset = {0, 0};
+        scissor.extent = swapChainExtent;
+
+        VkPipelineViewportStateCreateInfo viewportState{};
+        viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewportState.viewportCount = 1;
+        viewportState.pViewports = &viewport;
+        viewportState.scissorCount = 1;
+        viewportState.pScissors = &scissor;
+
+        VkPipelineRasterizationStateCreateInfo rasterizer{};
+        rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterizer.lineWidth = 1.0f;
+        rasterizer.cullMode = VK_CULL_MODE_NONE;
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+        VkPipelineMultisampleStateCreateInfo multisampling{};
+        multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        VkPipelineDepthStencilStateCreateInfo depthStencil{};
+        depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        depthStencil.depthTestEnable = VK_FALSE;
+        depthStencil.depthWriteEnable = VK_FALSE;
+        depthStencil.depthCompareOp = VK_COMPARE_OP_ALWAYS;
+        depthStencil.depthBoundsTestEnable = VK_FALSE;
+        depthStencil.stencilTestEnable = VK_FALSE;
+
+        VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+        colorBlendAttachment.colorWriteMask =
+            VK_COLOR_COMPONENT_R_BIT |
+            VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT |
+            VK_COLOR_COMPONENT_A_BIT;
+
+        VkPipelineColorBlendStateCreateInfo colorBlending{};
+        colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        colorBlending.attachmentCount = 1;
+        colorBlending.pAttachments = &colorBlendAttachment;
+
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+
+        if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &crosshairPipelineLayout) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create crosshair pipeline layout");
+        }
+
+        VkGraphicsPipelineCreateInfo pipelineInfo{};
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = shaderStages;
+        pipelineInfo.pVertexInputState = &vertexInputInfo;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterizer;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pDepthStencilState = &depthStencil;
+        pipelineInfo.pColorBlendState = &colorBlending;
+        pipelineInfo.layout = crosshairPipelineLayout;
+        pipelineInfo.renderPass = renderPass;
+        pipelineInfo.subpass = 0;
+
+        if (vkCreateGraphicsPipelines(
+                device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &crosshairPipeline) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create crosshair pipeline");
+        }
+
+        vkDestroyShaderModule(device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(device, vertShaderModule, nullptr);
     }
 
     void createInstance() {
@@ -1064,9 +1661,15 @@ private:
         VkSubpassDependency dependency{};
         dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
         dependency.dstSubpass = 0;
-        dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-        dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-        dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        dependency.srcStageMask =
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        dependency.dstStageMask =
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        dependency.dstAccessMask =
+            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
         std::array<VkAttachmentDescription, 2> attachments = {
             colorAttachment,
@@ -1102,153 +1705,6 @@ private:
         if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) {
             throw std::runtime_error("Failed to create descriptor set layout");
         }
-    }
-
-    VkShaderModule createShaderModule(const std::vector<char>& code) {
-        VkShaderModuleCreateInfo createInfo{};
-        createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-        createInfo.codeSize = code.size();
-        createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
-
-        VkShaderModule shaderModule = VK_NULL_HANDLE;
-        if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create shader module");
-        }
-
-        return shaderModule;
-    }
-
-    void createGraphicsPipeline() {
-        auto vertShaderCode = readFile("shaders/bin/basic.vert.spv");
-        auto fragShaderCode = readFile("shaders/bin/basic.frag.spv");
-
-        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
-        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
-
-        VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
-        vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
-        vertShaderStageInfo.module = vertShaderModule;
-        vertShaderStageInfo.pName = "main";
-
-        VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
-        fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        fragShaderStageInfo.module = fragShaderModule;
-        fragShaderStageInfo.pName = "main";
-
-        VkPipelineShaderStageCreateInfo shaderStages[] = {
-            vertShaderStageInfo,
-            fragShaderStageInfo
-        };
-
-        VkVertexInputBindingDescription bindingDescription{};
-        bindingDescription.binding = 0;
-        bindingDescription.stride = sizeof(Vertex);
-        bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
-        std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
-        attributeDescriptions[0].binding = 0;
-        attributeDescriptions[0].location = 0;
-        attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-        attributeDescriptions[0].offset = offsetof(Vertex, position);
-
-        attributeDescriptions[1].binding = 0;
-        attributeDescriptions[1].location = 1;
-        attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-        attributeDescriptions[1].offset = offsetof(Vertex, color);
-
-        VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
-        vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-        vertexInputInfo.vertexBindingDescriptionCount = 1;
-        vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
-        vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
-        vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
-
-        VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
-        inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-
-        VkViewport viewport{};
-        viewport.x = 0.0f;
-        viewport.y = 0.0f;
-        viewport.width = static_cast<float>(swapChainExtent.width);
-        viewport.height = static_cast<float>(swapChainExtent.height);
-        viewport.minDepth = 0.0f;
-        viewport.maxDepth = 1.0f;
-
-        VkRect2D scissor{};
-        scissor.offset = {0, 0};
-        scissor.extent = swapChainExtent;
-
-        VkPipelineViewportStateCreateInfo viewportState{};
-        viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-        viewportState.viewportCount = 1;
-        viewportState.pViewports = &viewport;
-        viewportState.scissorCount = 1;
-        viewportState.pScissors = &scissor;
-
-        VkPipelineRasterizationStateCreateInfo rasterizer{};
-        rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-        rasterizer.polygonMode = wireframeEnabled ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
-        rasterizer.lineWidth = 1.0f;
-        rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-
-        VkPipelineMultisampleStateCreateInfo multisampling{};
-        multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-        VkPipelineDepthStencilStateCreateInfo depthStencil{};
-        depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-        depthStencil.depthTestEnable = VK_TRUE;
-        depthStencil.depthWriteEnable = VK_TRUE;
-        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
-        depthStencil.depthBoundsTestEnable = VK_FALSE;
-        depthStencil.stencilTestEnable = VK_FALSE;
-
-        VkPipelineColorBlendAttachmentState colorBlendAttachment{};
-        colorBlendAttachment.colorWriteMask =
-            VK_COLOR_COMPONENT_R_BIT |
-            VK_COLOR_COMPONENT_G_BIT |
-            VK_COLOR_COMPONENT_B_BIT |
-            VK_COLOR_COMPONENT_A_BIT;
-
-        VkPipelineColorBlendStateCreateInfo colorBlending{};
-        colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-        colorBlending.attachmentCount = 1;
-        colorBlending.pAttachments = &colorBlendAttachment;
-
-        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
-        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipelineLayoutInfo.setLayoutCount = 1;
-        pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
-
-        if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create pipeline layout");
-        }
-
-        VkGraphicsPipelineCreateInfo pipelineInfo{};
-        pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-        pipelineInfo.stageCount = 2;
-        pipelineInfo.pStages = shaderStages;
-        pipelineInfo.pVertexInputState = &vertexInputInfo;
-        pipelineInfo.pInputAssemblyState = &inputAssembly;
-        pipelineInfo.pViewportState = &viewportState;
-        pipelineInfo.pRasterizationState = &rasterizer;
-        pipelineInfo.pMultisampleState = &multisampling;
-        pipelineInfo.pDepthStencilState = &depthStencil;
-        pipelineInfo.pColorBlendState = &colorBlending;
-        pipelineInfo.layout = pipelineLayout;
-        pipelineInfo.renderPass = renderPass;
-        pipelineInfo.subpass = 0;
-
-        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &graphicsPipeline) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to create graphics pipeline");
-        }
-
-        vkDestroyShaderModule(device, fragShaderModule, nullptr);
-        vkDestroyShaderModule(device, vertShaderModule, nullptr);
     }
 
     void createFramebuffers() {
@@ -1539,9 +1995,9 @@ private:
             nullptr
         );
 
-        VkBuffer vertexBuffers[] = { vertexBuffer };
-        VkDeviceSize offsets[] = { 0 };
-        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+        VkBuffer worldVertexBuffers[] = { vertexBuffer };
+        VkDeviceSize worldOffsets[] = { 0 };
+        vkCmdBindVertexBuffers(commandBuffer, 0, 1, worldVertexBuffers, worldOffsets);
         vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
         for (uint32_t visibleIndex : visibleChunkIndices) {
@@ -1559,6 +2015,34 @@ private:
                 0,
                 0
             );
+        }
+
+        if (hasSelectedBlock && outlineVertexCount > 0) {
+            VkBuffer vb[] = { outlineVertexBuffer };
+            VkDeviceSize offsets[] = { 0 };
+
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, outlinePipeline);
+            vkCmdBindDescriptorSets(
+                commandBuffer,
+                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                outlinePipelineLayout,
+                0,
+                1,
+                &descriptorSet,
+                0,
+                nullptr
+            );
+            vkCmdBindVertexBuffers(commandBuffer, 0, 1, vb, offsets);
+            vkCmdDraw(commandBuffer, outlineVertexCount, 1, 0, 0);
+        }
+
+        if (crosshairVertexCount > 0) {
+            VkBuffer vb[] = { crosshairVertexBuffer };
+            VkDeviceSize offsets[] = { 0 };
+
+            vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, crosshairPipeline);
+            vkCmdBindVertexBuffers(commandBuffer, 0, 1, vb, offsets);
+            vkCmdDraw(commandBuffer, crosshairVertexCount, 1, 0, 0);
         }
 
         vkCmdEndRenderPass(commandBuffer);
@@ -1585,13 +2069,14 @@ private:
 
     bool isDeviceSuitable(VkPhysicalDevice dev) {
         QueueFamilyIndices indices = findQueueFamilies(dev);
-        bool extensionsSupported = checkDeviceExtensionSupport(dev);
-        bool swapChainAdequate = false;
+        const bool extensionsSupported = checkDeviceExtensionSupport(dev);
 
+        bool swapChainAdequate = false;
         if (extensionsSupported) {
             SwapChainSupportDetails swapChainSupport = querySwapChainSupport(dev);
-            swapChainAdequate = !swapChainSupport.formats.empty() &&
-                               !swapChainSupport.presentModes.empty();
+            swapChainAdequate =
+                !swapChainSupport.formats.empty() &&
+                !swapChainSupport.presentModes.empty();
         }
 
         return indices.isComplete() && extensionsSupported && swapChainAdequate;
@@ -1660,7 +2145,8 @@ private:
         vkGetPhysicalDeviceSurfacePresentModesKHR(dev, surface, &presentModeCount, nullptr);
         if (presentModeCount != 0) {
             details.presentModes.resize(presentModeCount);
-            vkGetPhysicalDeviceSurfacePresentModesKHR(dev, surface, &presentModeCount, details.presentModes.data());
+            vkGetPhysicalDeviceSurfacePresentModesKHR(
+                dev, surface, &presentModeCount, details.presentModes.data());
         }
 
         return details;
@@ -1673,6 +2159,7 @@ private:
                 return availableFormat;
             }
         }
+
         return availableFormats[0];
     }
 
@@ -1682,6 +2169,7 @@ private:
                 return availablePresentMode;
             }
         }
+
         return VK_PRESENT_MODE_FIFO_KHR;
     }
 

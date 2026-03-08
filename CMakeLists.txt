@@ -34,6 +34,8 @@ add_executable(VulkanVoxelEngine
     src/world/World.cpp
     src/world/WorldMesher.cpp
     src/camera/Camera.cpp
+    src/player/Player.cpp
+    src/world/Physics.cpp
 )
 
 target_include_directories(VulkanVoxelEngine PRIVATE include)
