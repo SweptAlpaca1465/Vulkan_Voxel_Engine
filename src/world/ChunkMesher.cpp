@@ -1,17 +1,35 @@
 #include "world/ChunkMesher.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cstdint>
 #include <vector>
 
 namespace ChunkMesher {
 namespace {
 
+
+bool isSolid(BlockType block);
+
+BlockType getBlockByAxis(
+    const Chunk& chunk,
+    const Chunk* west,
+    const Chunk* east,
+    const Chunk* north,
+    const Chunk* south,
+    int axis,
+    int a,
+    int b,
+    int c
+);
+
 struct MaskCell {
     BlockType block = BlockType::Air;
     int normal = 0;
+    uint8_t aoLevel = 0;
 
     bool operator==(const MaskCell& other) const {
-        return block == other.block && normal == other.normal;
+        return block == other.block && normal == other.normal && aoLevel == other.aoLevel;
     }
 
     bool isEmpty() const {
@@ -45,12 +63,47 @@ float getFaceShade(int axis, int normal) {
     return 0.70f; // z-facing sides
 }
 
-Vertex makeVertex(float x, float y, float z, BlockType block, float shade) {
+
+float getAmbientOcclusionFactor(uint8_t aoLevel) {
+    const float darkness = static_cast<float>(aoLevel) * 0.08f;
+    return std::clamp(1.0f - darkness, 0.55f, 1.0f);
+}
+
+uint8_t computeFaceAOLevel(
+    const Chunk& chunk,
+    const Chunk* west,
+    const Chunk* east,
+    const Chunk* north,
+    const Chunk* south,
+    int axis,
+    int a,
+    int b,
+    int c
+) {
+    const BlockType left  = getBlockByAxis(chunk, west, east, north, south, axis, a, b - 1, c);
+    const BlockType right = getBlockByAxis(chunk, west, east, north, south, axis, a, b + 1, c);
+    const BlockType down  = getBlockByAxis(chunk, west, east, north, south, axis, a, b, c - 1);
+    const BlockType up    = getBlockByAxis(chunk, west, east, north, south, axis, a, b, c + 1);
+    const BlockType back  = getBlockByAxis(chunk, west, east, north, south, axis, a - 1, b, c);
+
+    uint8_t occluders = 0;
+    occluders += static_cast<uint8_t>(isSolid(left));
+    occluders += static_cast<uint8_t>(isSolid(right));
+    occluders += static_cast<uint8_t>(isSolid(down));
+    occluders += static_cast<uint8_t>(isSolid(up));
+    occluders += static_cast<uint8_t>(isSolid(back));
+    return occluders;
+}
+
+Vertex makeVertex(float x, float y, float z, BlockType block, float shade, uint8_t aoLevel) {
     std::array<float, 3> color = getBaseColor(block);
 
-    color[0] *= shade;
-    color[1] *= shade;
-    color[2] *= shade;
+    const float ao = getAmbientOcclusionFactor(aoLevel);
+    const float lighting = shade * ao;
+
+    color[0] *= lighting;
+    color[1] *= lighting;
+    color[2] *= lighting;
 
     return Vertex{{x, y, z}, color};
 }
@@ -105,7 +158,8 @@ void addQuad(
     int v0,
     int width,
     int height,
-    int normal
+    int normal,
+    uint8_t aoLevel
 ) {
     const uint32_t startIndex = static_cast<uint32_t>(mesh.vertices.size());
     const float shade = getFaceShade(axis, normal);
@@ -157,7 +211,7 @@ void addQuad(
     }
 
     for (const auto& p : positions) {
-        mesh.vertices.push_back(makeVertex(p[0], p[1], p[2], block, shade));
+        mesh.vertices.push_back(makeVertex(p[0], p[1], p[2], block, shade, aoLevel));
     }
 
     mesh.indices.push_back(startIndex + 0);
@@ -222,9 +276,11 @@ ChunkMesh build(
                     if (backSolid && !frontSolid) {
                         cell.block = backBlock;
                         cell.normal = +1;
+                        cell.aoLevel = computeFaceAOLevel(chunk, west, east, north, south, axis, slice - 1, u, v);
                     } else if (!backSolid && frontSolid) {
                         cell.block = frontBlock;
                         cell.normal = -1;
+                        cell.aoLevel = computeFaceAOLevel(chunk, west, east, north, south, axis, slice, u, v);
                     } else {
                         cell.block = BlockType::Air;
                         cell.normal = 0;
@@ -265,7 +321,7 @@ ChunkMesh build(
                         }
                     }
 
-                    addQuad(mesh, cell.block, axis, slice, u, v, width, height, cell.normal);
+                    addQuad(mesh, cell.block, axis, slice, u, v, width, height, cell.normal, cell.aoLevel);
 
                     for (int dy = 0; dy < height; ++dy) {
                         for (int dx = 0; dx < width; ++dx) {
