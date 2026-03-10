@@ -23,8 +23,8 @@ float smoothStep(float t) {
     return t * t * (3.0f - 2.0f * t);
 }
 
-float hashNoise(int x, int y, int z) {
-    const int h = x * 374761393 + y * 668265263 + z * 2147483647;
+float hashNoise(int x, int z) {
+    const int h = x * 374761393 + z * 668265263;
     const int mixed = (h ^ (h >> 13)) * 1274126177;
     const int finalHash = mixed ^ (mixed >> 16);
     const float unit = static_cast<float>(finalHash & 0x7fffffff) / 2147483647.0f;
@@ -40,134 +40,34 @@ float valueNoise2D(float x, float z) {
     const float tx = smoothStep(x - static_cast<float>(x0));
     const float tz = smoothStep(z - static_cast<float>(z0));
 
-    const float n00 = hashNoise(x0, 0, z0);
-    const float n10 = hashNoise(x1, 0, z0);
-    const float n01 = hashNoise(x0, 0, z1);
-    const float n11 = hashNoise(x1, 0, z1);
+    const float n00 = hashNoise(x0, z0);
+    const float n10 = hashNoise(x1, z0);
+    const float n01 = hashNoise(x0, z1);
+    const float n11 = hashNoise(x1, z1);
 
     const float nx0 = lerp(n00, n10, tx);
     const float nx1 = lerp(n01, n11, tx);
     return lerp(nx0, nx1, tz);
 }
 
-float valueNoise3D(float x, float y, float z) {
-    const int x0 = static_cast<int>(std::floor(x));
-    const int y0 = static_cast<int>(std::floor(y));
-    const int z0 = static_cast<int>(std::floor(z));
-
-    const int x1 = x0 + 1;
-    const int y1 = y0 + 1;
-    const int z1 = z0 + 1;
-
-    const float tx = smoothStep(x - static_cast<float>(x0));
-    const float ty = smoothStep(y - static_cast<float>(y0));
-    const float tz = smoothStep(z - static_cast<float>(z0));
-
-    const float n000 = hashNoise(x0, y0, z0);
-    const float n100 = hashNoise(x1, y0, z0);
-    const float n010 = hashNoise(x0, y1, z0);
-    const float n110 = hashNoise(x1, y1, z0);
-    const float n001 = hashNoise(x0, y0, z1);
-    const float n101 = hashNoise(x1, y0, z1);
-    const float n011 = hashNoise(x0, y1, z1);
-    const float n111 = hashNoise(x1, y1, z1);
-
-    const float nx00 = lerp(n000, n100, tx);
-    const float nx10 = lerp(n010, n110, tx);
-    const float nx01 = lerp(n001, n101, tx);
-    const float nx11 = lerp(n011, n111, tx);
-
-    const float nxy0 = lerp(nx00, nx10, ty);
-    const float nxy1 = lerp(nx01, nx11, ty);
-    return lerp(nxy0, nxy1, tz);
-}
-
-float fbm2D(float x, float z, int octaves = 4) {
+float fbm2D(float x, float z) {
     float value = 0.0f;
     float amplitude = 1.0f;
     float frequency = 1.0f;
     float amplitudeSum = 0.0f;
 
-    for (int octave = 0; octave < octaves; ++octave) {
+    for (int octave = 0; octave < 4; ++octave) {
         value += valueNoise2D(x * frequency, z * frequency) * amplitude;
         amplitudeSum += amplitude;
         amplitude *= 0.5f;
         frequency *= 2.0f;
     }
 
-    return (amplitudeSum > 0.0f) ? value / amplitudeSum : 0.0f;
-}
-
-float fbm3D(float x, float y, float z, int octaves = 3) {
-    float value = 0.0f;
-    float amplitude = 1.0f;
-    float frequency = 1.0f;
-    float amplitudeSum = 0.0f;
-
-    for (int octave = 0; octave < octaves; ++octave) {
-        value += valueNoise3D(x * frequency, y * frequency, z * frequency) * amplitude;
-        amplitudeSum += amplitude;
-        amplitude *= 0.5f;
-        frequency *= 2.0f;
+    if (amplitudeSum > 0.0f) {
+        value /= amplitudeSum;
     }
 
-    return (amplitudeSum > 0.0f) ? value / amplitudeSum : 0.0f;
-}
-
-enum class TerrainBiome {
-    Plains,
-    Hilly,
-    Rocky
-};
-
-TerrainBiome chooseBiome(float temperature, float humidity, float weirdness) {
-    if (weirdness > 0.35f || (temperature < -0.2f && humidity < 0.0f)) {
-        return TerrainBiome::Rocky;
-    }
-
-    if (humidity > 0.15f) {
-        return TerrainBiome::Hilly;
-    }
-
-    return TerrainBiome::Plains;
-}
-
-int computeTerrainHeight(int worldX, int worldZ, TerrainBiome biome) {
-    const float continentalness = fbm2D(static_cast<float>(worldX) * 0.020f, static_cast<float>(worldZ) * 0.020f, 5);
-    const float erosion = fbm2D(static_cast<float>(worldX) * 0.060f, static_cast<float>(worldZ) * 0.060f, 4);
-    const float ridges = std::abs(fbm2D(static_cast<float>(worldX) * 0.045f, static_cast<float>(worldZ) * 0.045f, 4));
-    const float detail = fbm2D(static_cast<float>(worldX) * 0.12f, static_cast<float>(worldZ) * 0.12f, 3);
-
-    float base = 4.5f + continentalness * 3.6f + ridges * 2.8f - erosion * 1.7f + detail * 1.0f;
-
-    if (biome == TerrainBiome::Rocky) {
-        base += 1.4f + ridges * 1.6f;
-    } else if (biome == TerrainBiome::Hilly) {
-        base += 0.6f;
-    }
-
-    return std::clamp(static_cast<int>(std::round(base)), 2, Chunk::SizeY - 2);
-}
-
-bool shouldCarveCave(int worldX, int y, int worldZ) {
-    const float cheese = fbm3D(
-        static_cast<float>(worldX) * 0.090f,
-        static_cast<float>(y) * 0.135f,
-        static_cast<float>(worldZ) * 0.090f,
-        3
-    );
-
-    const float spaghetti = fbm3D(
-        static_cast<float>(worldX) * 0.17f,
-        static_cast<float>(y) * 0.06f,
-        static_cast<float>(worldZ) * 0.17f,
-        2
-    );
-
-    const float caveSignal = cheese * 0.75f + (1.0f - std::abs(spaghetti)) * 0.25f;
-    const float heightBias = (static_cast<float>(y) / static_cast<float>(Chunk::SizeY)) * 0.18f;
-
-    return caveSignal > 0.64f + heightBias;
+    return value;
 }
 }
 
@@ -198,27 +98,32 @@ void World::generateChunk(int x, int z) {
             const int worldX = x * Chunk::SizeX + localX;
             const int worldZ = z * Chunk::SizeZ + localZ;
 
-            const float temperature = fbm2D(static_cast<float>(worldX) * 0.010f, static_cast<float>(worldZ) * 0.010f, 4);
-            const float humidity = fbm2D(static_cast<float>(worldX) * 0.014f, static_cast<float>(worldZ) * 0.014f, 4);
-            const float weirdness = fbm2D(static_cast<float>(worldX) * 0.030f, static_cast<float>(worldZ) * 0.030f, 3);
+            const float macroNoise = fbm2D(
+                static_cast<float>(worldX) * 0.045f,
+                static_cast<float>(worldZ) * 0.045f
+            );
+            const float detailNoise = fbm2D(
+                static_cast<float>(worldX) * 0.11f,
+                static_cast<float>(worldZ) * 0.11f
+            );
 
-            const TerrainBiome biome = chooseBiome(temperature, humidity, weirdness);
-            const int terrainHeight = computeTerrainHeight(worldX, worldZ, biome);
+            float heightFactor = macroNoise * 0.8f + detailNoise * 0.2f;
+            heightFactor = std::clamp(heightFactor, -1.0f, 1.0f);
+
+            const int terrainHeight = std::clamp(
+                static_cast<int>(std::round(5.0f + heightFactor * 3.5f)),
+                1,
+                Chunk::SizeY - 2
+            );
 
             for (int y = 0; y <= terrainHeight; ++y) {
-                BlockType type = BlockType::Stone;
-
                 if (y == terrainHeight) {
-                    type = (biome == TerrainBiome::Rocky) ? BlockType::Stone : BlockType::Grass;
+                    worldChunk.chunk.set(localX, y, localZ, BlockType::Grass);
                 } else if (y >= terrainHeight - 2) {
-                    type = (biome == TerrainBiome::Rocky) ? BlockType::Stone : BlockType::Dirt;
+                    worldChunk.chunk.set(localX, y, localZ, BlockType::Dirt);
+                } else {
+                    worldChunk.chunk.set(localX, y, localZ, BlockType::Stone);
                 }
-
-                if (y > 1 && y < terrainHeight - 1 && shouldCarveCave(worldX, y, worldZ)) {
-                    type = BlockType::Air;
-                }
-
-                worldChunk.chunk.set(localX, y, localZ, type);
             }
         }
     }

@@ -72,7 +72,6 @@ public:
         }
 
         updateDebugToggles();
-        updateSunInput();
         updateCameraRotationFromMouse();
 
         bool wantsJump = false;
@@ -556,34 +555,6 @@ private:
         }
 
         return wishMove;
-    }
-
-
-    void updateSunInput() {
-        GLFWwindow* nativeWindow = window.getNativeHandle();
-
-        if (glfwGetKey(nativeWindow, GLFW_KEY_UP) == GLFW_PRESS) {
-            sunElevationDegrees += 0.6f;
-        }
-        if (glfwGetKey(nativeWindow, GLFW_KEY_DOWN) == GLFW_PRESS) {
-            sunElevationDegrees -= 0.6f;
-        }
-        if (glfwGetKey(nativeWindow, GLFW_KEY_LEFT) == GLFW_PRESS) {
-            sunAzimuthDegrees -= 0.9f;
-        }
-        if (glfwGetKey(nativeWindow, GLFW_KEY_RIGHT) == GLFW_PRESS) {
-            sunAzimuthDegrees += 0.9f;
-        }
-
-        if (glfwGetKey(nativeWindow, GLFW_KEY_PAGE_UP) == GLFW_PRESS) {
-            ambientStrength += 0.01f;
-        }
-        if (glfwGetKey(nativeWindow, GLFW_KEY_PAGE_DOWN) == GLFW_PRESS) {
-            ambientStrength -= 0.01f;
-        }
-
-        sunElevationDegrees = std::clamp(sunElevationDegrees, 5.0f, 85.0f);
-        ambientStrength = std::clamp(ambientStrength, 0.12f, 0.75f);
     }
 
     void updateCameraRotationFromMouse() {
