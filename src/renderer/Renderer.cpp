@@ -147,6 +147,10 @@ private:
     bool wireframeEnabled = false;
     bool streamingEnabled = true;
 
+    float sunAzimuthDegrees = 38.0f;
+    float sunElevationDegrees = 58.0f;
+    float ambientStrength = 0.42f;
+
     bool f1PressedLastFrame = false;
     bool f3PressedLastFrame = false;
     bool f4PressedLastFrame = false;
@@ -479,6 +483,9 @@ private:
                     << " | Loaded Chunks: " << chunkSections.size()
                     << " | Stream: " << (streamingEnabled ? "ON" : "OFF")
                     << " | Wireframe: " << (wireframeEnabled ? "ON" : "OFF")
+                    << " | Sun: " << static_cast<int>(sunAzimuthDegrees) << "°/"
+                    << static_cast<int>(sunElevationDegrees) << "°"
+                    << " | Amb: " << ambientStrength
                     << " | Debug: ON";
 
                 window.setTitle(title.str());
@@ -1860,6 +1867,17 @@ private:
 
         ubo.view = camera.getViewMatrix();
         ubo.proj = camera.getProjectionMatrix(aspect);
+
+        const float azimuth = glm::radians(sunAzimuthDegrees);
+        const float elevation = glm::radians(sunElevationDegrees);
+
+        const glm::vec3 lightDir(
+            std::cos(elevation) * std::cos(azimuth),
+            std::sin(elevation),
+            std::cos(elevation) * std::sin(azimuth)
+        );
+
+        ubo.lightDirAmbient = glm::vec4(glm::normalize(lightDir), ambientStrength);
 
         void* data = nullptr;
         vkMapMemory(device, uniformBufferMemory, 0, sizeof(ubo), 0, &data);
