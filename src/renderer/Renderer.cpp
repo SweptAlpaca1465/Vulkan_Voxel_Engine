@@ -40,6 +40,18 @@ class Renderer::Impl {
 public:
     explicit Impl(Window& window)
         : window(window) {
+        GLFWwindow* nativeWindow = window.getNativeHandle();
+        glfwSetInputMode(nativeWindow, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        glfwSetWindowUserPointer(nativeWindow, this);
+        glfwSetScrollCallback(nativeWindow, [](GLFWwindow* win, double, double yoffset) {
+            auto* self = static_cast<Impl*>(glfwGetWindowUserPointer(win));
+            if (self) {
+                self->pendingScrollSteps += yoffset;
+            }
+        });
+
+        camera.setPosition(player.getEyePosition());
+        movementModifiers = physics.getMovementModifiers();
         glfwSetInputMode(window.getNativeHandle(), GLFW_CURSOR, GLFW_CURSOR_DISABLED);
         camera.setPosition(player.getEyePosition());
         lastFpsTime = glfwGetTime();
@@ -72,6 +84,7 @@ public:
         }
 
         updateDebugToggles();
+        updateHotbarFromScroll();
         updateSunInput();
         updateMovementModifierInput();
         updateCameraRotationFromMouse();
@@ -185,6 +198,10 @@ private:
 
     bool hasSelectedBlock = false;
     glm::ivec3 selectedBlockPos{0};
+
+    std::array<BlockType, 3> hotbarBlocks{BlockType::Grass, BlockType::Dirt, BlockType::Stone};
+    int hotbarIndex = 2;
+    double pendingScrollSteps = 0.0;
 
     VkInstance instance = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
@@ -428,6 +445,32 @@ private:
         }
     }
 
+
+    void updateHotbarFromScroll() {
+        while (pendingScrollSteps >= 1.0) {
+            hotbarIndex = (hotbarIndex + 1) % static_cast<int>(hotbarBlocks.size());
+            pendingScrollSteps -= 1.0;
+        }
+
+        while (pendingScrollSteps <= -1.0) {
+            hotbarIndex = (hotbarIndex - 1 + static_cast<int>(hotbarBlocks.size())) %
+                         static_cast<int>(hotbarBlocks.size());
+            pendingScrollSteps += 1.0;
+        }
+
+        player.setSelectedBlockType(hotbarBlocks[static_cast<size_t>(hotbarIndex)]);
+    }
+
+    const char* blockTypeName(BlockType type) const {
+        switch (type) {
+            case BlockType::Grass: return "Grass";
+            case BlockType::Dirt: return "Dirt";
+            case BlockType::Stone: return "Stone";
+            case BlockType::Air:
+            default: return "Air";
+        }
+    }
+
     void updateDebugToggles() {
         GLFWwindow* nativeWindow = window.getNativeHandle();
 
@@ -449,6 +492,15 @@ private:
         }
 
         if (glfwGetKey(nativeWindow, GLFW_KEY_1) == GLFW_PRESS) {
+            hotbarIndex = 0;
+            player.setSelectedBlockType(BlockType::Grass);
+        }
+        if (glfwGetKey(nativeWindow, GLFW_KEY_2) == GLFW_PRESS) {
+            hotbarIndex = 1;
+            player.setSelectedBlockType(BlockType::Dirt);
+        }
+        if (glfwGetKey(nativeWindow, GLFW_KEY_3) == GLFW_PRESS) {
+            hotbarIndex = 2;
             player.setSelectedBlockType(BlockType::Grass);
         }
         if (glfwGetKey(nativeWindow, GLFW_KEY_2) == GLFW_PRESS) {
@@ -495,6 +547,7 @@ private:
                     << movementModifiers.sprintSpeed << "/"
                     << movementModifiers.jumpVelocity << "/"
                     << movementModifiers.gravity
+                    << " | Block: " << blockTypeName(player.getSelectedBlockType())
                     << " | Debug: ON";
 
                 window.setTitle(title.str());
@@ -1122,7 +1175,7 @@ private:
         bindingDescription.stride = sizeof(Vertex);
         bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-        std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
+        std::array<VkVertexInputAttributeDescription, 3> attributeDescriptions{};
         attributeDescriptions[0].binding = 0;
         attributeDescriptions[0].location = 0;
         attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
@@ -1132,6 +1185,11 @@ private:
         attributeDescriptions[1].location = 1;
         attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
         attributeDescriptions[1].offset = offsetof(Vertex, color);
+
+        attributeDescriptions[2].binding = 0;
+        attributeDescriptions[2].location = 2;
+        attributeDescriptions[2].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attributeDescriptions[2].offset = offsetof(Vertex, normal);
 
         VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
         vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
