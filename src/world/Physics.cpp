@@ -7,26 +7,67 @@
 Physics::Physics()
     : gravity(0.0035f),
       jumpVelocity(0.065f),
-      horizontalMoveSpeed(0.045f),
-      airControlFactor(0.35f) {
+      walkSpeed(0.038f),
+      sprintSpeed(0.058f),
+      groundAcceleration(0.22f),
+      airAcceleration(0.06f),
+      groundFriction(0.80f) {
+}
+
+
+Physics::MovementModifiers Physics::getMovementModifiers() const {
+    MovementModifiers modifiers{};
+    modifiers.walkSpeed = walkSpeed;
+    modifiers.sprintSpeed = sprintSpeed;
+    modifiers.groundAcceleration = groundAcceleration;
+    modifiers.airAcceleration = airAcceleration;
+    modifiers.groundFriction = groundFriction;
+    modifiers.jumpVelocity = jumpVelocity;
+    modifiers.gravity = gravity;
+    return modifiers;
+}
+
+void Physics::setMovementModifiers(const MovementModifiers& modifiers) {
+    walkSpeed = std::clamp(modifiers.walkSpeed, 0.005f, 0.20f);
+    sprintSpeed = std::clamp(modifiers.sprintSpeed, walkSpeed, 0.30f);
+    groundAcceleration = std::clamp(modifiers.groundAcceleration, 0.01f, 1.0f);
+    airAcceleration = std::clamp(modifiers.airAcceleration, 0.005f, 1.0f);
+    groundFriction = std::clamp(modifiers.groundFriction, 0.10f, 0.99f);
+    jumpVelocity = std::clamp(modifiers.jumpVelocity, 0.01f, 0.20f);
+    gravity = std::clamp(modifiers.gravity, 0.0005f, 0.03f);
 }
 
 void Physics::simulatePlayer(
     Player& player,
     const World& world,
     const glm::vec3& wishMove,
-    bool wantsJump
+    bool wantsJump,
+    bool wantsSprint
 ) const {
     glm::vec3 velocity = player.getVelocity();
     glm::vec3 position = player.getPosition();
 
-    const float control = player.isGrounded() ? 1.0f : airControlFactor;
-    const glm::vec3 horizontalVelocity = wishMove * (horizontalMoveSpeed * control);
+    const bool wasGrounded = player.isGrounded();
+    const float targetSpeed = wantsSprint ? sprintSpeed : walkSpeed;
+
+    glm::vec2 horizontalVelocity(velocity.x, velocity.z);
+    glm::vec2 desiredVelocity(wishMove.x, wishMove.z);
+
+    if (glm::length(desiredVelocity) > 0.0001f) {
+        desiredVelocity = glm::normalize(desiredVelocity) * targetSpeed;
+        const float accel = wasGrounded ? groundAcceleration : airAcceleration;
+        horizontalVelocity += (desiredVelocity - horizontalVelocity) * accel;
+    } else if (wasGrounded) {
+        horizontalVelocity *= groundFriction;
+        if (glm::length(horizontalVelocity) < 0.0001f) {
+            horizontalVelocity = glm::vec2(0.0f);
+        }
+    }
 
     velocity.x = horizontalVelocity.x;
-    velocity.z = horizontalVelocity.z;
+    velocity.z = horizontalVelocity.y;
 
-    if (wantsJump && player.isGrounded()) {
+    if (wantsJump && wasGrounded) {
         velocity.y = jumpVelocity;
         player.setGrounded(false);
     }
@@ -34,12 +75,13 @@ void Physics::simulatePlayer(
     player.setGrounded(false);
     velocity.y -= gravity;
 
+    player.setVelocity(velocity);
+
     movePlayerAxis(player, world, position, 0, velocity.x);
     movePlayerAxis(player, world, position, 1, velocity.y);
     movePlayerAxis(player, world, position, 2, velocity.z);
 
     player.setPosition(position);
-    player.setVelocity(velocity);
 }
 
 BlockRaycastHit Physics::raycastBlocks(
