@@ -98,6 +98,27 @@ void World::generateChunk(int x, int z) {
             const int worldX = x * Chunk::SizeX + localX;
             const int worldZ = z * Chunk::SizeZ + localZ;
 
+            const float temperature = fbm2D(static_cast<float>(worldX) * 0.010f, static_cast<float>(worldZ) * 0.010f, 4);
+            const float humidity = fbm2D(static_cast<float>(worldX) * 0.014f, static_cast<float>(worldZ) * 0.014f, 4);
+            const float weirdness = fbm2D(static_cast<float>(worldX) * 0.030f, static_cast<float>(worldZ) * 0.030f, 3);
+
+            const TerrainBiome biome = chooseBiome(temperature, humidity, weirdness);
+            const int terrainHeight = computeTerrainHeight(worldX, worldZ, biome);
+
+            for (int y = 0; y <= terrainHeight; ++y) {
+                BlockType type = BlockType::Stone;
+
+                if (y == terrainHeight) {
+                    type = (biome == TerrainBiome::Rocky) ? BlockType::Stone : BlockType::Grass;
+                } else if (y >= terrainHeight - 2) {
+                    type = (biome == TerrainBiome::Rocky) ? BlockType::Stone : BlockType::Dirt;
+                }
+
+                if (y > 1 && y < terrainHeight - 1 && shouldCarveCave(worldX, y, worldZ)) {
+                    type = BlockType::Air;
+                }
+
+                worldChunk.chunk.set(localX, y, localZ, type);
             const float macroNoise = fbm2D(
                 static_cast<float>(worldX) * 0.045f,
                 static_cast<float>(worldZ) * 0.045f

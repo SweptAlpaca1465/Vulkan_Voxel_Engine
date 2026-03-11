@@ -72,6 +72,8 @@ public:
         }
 
         updateDebugToggles();
+        updateSunInput();
+        updateMovementModifierInput();
         updateCameraRotationFromMouse();
 
         bool wantsJump = false;
@@ -150,6 +152,8 @@ private:
     float sunAzimuthDegrees = 38.0f;
     float sunElevationDegrees = 58.0f;
     float ambientStrength = 0.42f;
+
+    Physics::MovementModifiers movementModifiers{};
 
     bool f1PressedLastFrame = false;
     bool f3PressedLastFrame = false;
@@ -486,6 +490,11 @@ private:
                     << " | Sun: " << static_cast<int>(sunAzimuthDegrees) << "°/"
                     << static_cast<int>(sunElevationDegrees) << "°"
                     << " | Amb: " << ambientStrength
+                    << " | Move W/S/J/G: "
+                    << movementModifiers.walkSpeed << "/"
+                    << movementModifiers.sprintSpeed << "/"
+                    << movementModifiers.jumpVelocity << "/"
+                    << movementModifiers.gravity
                     << " | Debug: ON";
 
                 window.setTitle(title.str());
@@ -555,6 +564,91 @@ private:
         }
 
         return wishMove;
+    }
+
+
+    void updateSunInput() {
+        GLFWwindow* nativeWindow = window.getNativeHandle();
+
+        if (glfwGetKey(nativeWindow, GLFW_KEY_UP) == GLFW_PRESS) {
+            sunElevationDegrees += 0.6f;
+        }
+        if (glfwGetKey(nativeWindow, GLFW_KEY_DOWN) == GLFW_PRESS) {
+            sunElevationDegrees -= 0.6f;
+        }
+        if (glfwGetKey(nativeWindow, GLFW_KEY_LEFT) == GLFW_PRESS) {
+            sunAzimuthDegrees -= 0.9f;
+        }
+        if (glfwGetKey(nativeWindow, GLFW_KEY_RIGHT) == GLFW_PRESS) {
+            sunAzimuthDegrees += 0.9f;
+        }
+
+        if (glfwGetKey(nativeWindow, GLFW_KEY_PAGE_UP) == GLFW_PRESS) {
+            ambientStrength += 0.01f;
+        }
+        if (glfwGetKey(nativeWindow, GLFW_KEY_PAGE_DOWN) == GLFW_PRESS) {
+            ambientStrength -= 0.01f;
+        }
+
+        sunElevationDegrees = std::clamp(sunElevationDegrees, 5.0f, 85.0f);
+        ambientStrength = std::clamp(ambientStrength, 0.12f, 0.75f);
+    }
+
+
+    void updateMovementModifierInput() {
+        GLFWwindow* nativeWindow = window.getNativeHandle();
+
+        if (glfwGetKey(nativeWindow, GLFW_KEY_KP_7) == GLFW_PRESS) {
+            movementModifiers.walkSpeed += 0.001f;
+        }
+        if (glfwGetKey(nativeWindow, GLFW_KEY_KP_4) == GLFW_PRESS) {
+            movementModifiers.walkSpeed -= 0.001f;
+        }
+
+        if (glfwGetKey(nativeWindow, GLFW_KEY_KP_8) == GLFW_PRESS) {
+            movementModifiers.sprintSpeed += 0.001f;
+        }
+        if (glfwGetKey(nativeWindow, GLFW_KEY_KP_5) == GLFW_PRESS) {
+            movementModifiers.sprintSpeed -= 0.001f;
+        }
+
+        if (glfwGetKey(nativeWindow, GLFW_KEY_KP_9) == GLFW_PRESS) {
+            movementModifiers.jumpVelocity += 0.0015f;
+        }
+        if (glfwGetKey(nativeWindow, GLFW_KEY_KP_6) == GLFW_PRESS) {
+            movementModifiers.jumpVelocity -= 0.0015f;
+        }
+
+        if (glfwGetKey(nativeWindow, GLFW_KEY_KP_1) == GLFW_PRESS) {
+            movementModifiers.groundAcceleration += 0.01f;
+        }
+        if (glfwGetKey(nativeWindow, GLFW_KEY_KP_0) == GLFW_PRESS) {
+            movementModifiers.groundAcceleration -= 0.01f;
+        }
+
+        if (glfwGetKey(nativeWindow, GLFW_KEY_KP_2) == GLFW_PRESS) {
+            movementModifiers.airAcceleration += 0.005f;
+        }
+        if (glfwGetKey(nativeWindow, GLFW_KEY_KP_3) == GLFW_PRESS) {
+            movementModifiers.airAcceleration -= 0.005f;
+        }
+
+        if (glfwGetKey(nativeWindow, GLFW_KEY_KP_ADD) == GLFW_PRESS) {
+            movementModifiers.gravity += 0.00025f;
+        }
+        if (glfwGetKey(nativeWindow, GLFW_KEY_KP_SUBTRACT) == GLFW_PRESS) {
+            movementModifiers.gravity -= 0.00025f;
+        }
+
+        if (glfwGetKey(nativeWindow, GLFW_KEY_KP_MULTIPLY) == GLFW_PRESS) {
+            movementModifiers.groundFriction += 0.005f;
+        }
+        if (glfwGetKey(nativeWindow, GLFW_KEY_KP_DIVIDE) == GLFW_PRESS) {
+            movementModifiers.groundFriction -= 0.005f;
+        }
+
+        physics.setMovementModifiers(movementModifiers);
+        movementModifiers = physics.getMovementModifiers();
     }
 
     void updateCameraRotationFromMouse() {

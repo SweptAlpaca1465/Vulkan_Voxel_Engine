@@ -20,6 +20,16 @@ struct BlockRaycastHit {
 
 class Physics {
 public:
+    struct MovementModifiers {
+        float walkSpeed = 0.038f;
+        float sprintSpeed = 0.058f;
+        float groundAcceleration = 0.22f;
+        float airAcceleration = 0.06f;
+        float groundFriction = 0.80f;
+        float jumpVelocity = 0.065f;
+        float gravity = 0.0035f;
+    };
+
     Physics();
 
     void simulatePlayer(
@@ -29,6 +39,9 @@ public:
         bool wantsJump,
         bool wantsSprint
     ) const;
+
+    MovementModifiers getMovementModifiers() const;
+    void setMovementModifiers(const MovementModifiers& modifiers);
 
     BlockRaycastHit raycastBlocks(
         const World& world,
