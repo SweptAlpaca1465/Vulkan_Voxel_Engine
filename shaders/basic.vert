@@ -13,6 +13,8 @@ layout(location = 2) in vec3 inNormal;
 
 layout(location = 0) out vec3 fragBaseColor;
 layout(location = 1) out vec3 fragNormal;
+layout(location = 0) out vec3 fragWorldPos;
+layout(location = 1) out vec3 fragBaseColor;
 
 void main() {
     vec4 worldPos = ubo.model * vec4(inPosition, 1.0);
@@ -20,4 +22,6 @@ void main() {
 
     fragBaseColor = inColor;
     fragNormal = normalize(mat3(ubo.model) * inNormal);
+    fragWorldPos = worldPos.xyz;
+    fragBaseColor = inColor;
 }

@@ -25,6 +25,8 @@ float smoothStep(float t) {
 
 float hashNoise(int x, int y, int z) {
     const int h = x * 374761393 + y * 668265263 + z * 2147483647;
+float hashNoise(int x, int z) {
+    const int h = x * 374761393 + z * 668265263;
     const int mixed = (h ^ (h >> 13)) * 1274126177;
     const int finalHash = mixed ^ (mixed >> 16);
     const float unit = static_cast<float>(finalHash & 0x7fffffff) / 2147483647.0f;
@@ -44,6 +46,10 @@ float valueNoise2D(float x, float z) {
     const float n10 = hashNoise(x1, 0, z0);
     const float n01 = hashNoise(x0, 0, z1);
     const float n11 = hashNoise(x1, 0, z1);
+    const float n00 = hashNoise(x0, z0);
+    const float n10 = hashNoise(x1, z0);
+    const float n01 = hashNoise(x0, z1);
+    const float n11 = hashNoise(x1, z1);
 
     const float nx0 = lerp(n00, n10, tx);
     const float nx1 = lerp(n01, n11, tx);
@@ -83,12 +89,14 @@ float valueNoise3D(float x, float y, float z) {
 }
 
 float fbm2D(float x, float z, int octaves = 4) {
+float fbm2D(float x, float z) {
     float value = 0.0f;
     float amplitude = 1.0f;
     float frequency = 1.0f;
     float amplitudeSum = 0.0f;
 
     for (int octave = 0; octave < octaves; ++octave) {
+    for (int octave = 0; octave < 4; ++octave) {
         value += valueNoise2D(x * frequency, z * frequency) * amplitude;
         amplitudeSum += amplitude;
         amplitude *= 0.5f;
@@ -168,6 +176,11 @@ bool shouldCarveCave(int worldX, int y, int worldZ) {
     const float heightBias = (static_cast<float>(y) / static_cast<float>(Chunk::SizeY)) * 0.18f;
 
     return caveSignal > 0.64f + heightBias;
+    if (amplitudeSum > 0.0f) {
+        value /= amplitudeSum;
+    }
+
+    return value;
 }
 }
 
@@ -219,6 +232,32 @@ void World::generateChunk(int x, int z) {
                 }
 
                 worldChunk.chunk.set(localX, y, localZ, type);
+            const float macroNoise = fbm2D(
+                static_cast<float>(worldX) * 0.045f,
+                static_cast<float>(worldZ) * 0.045f
+            );
+            const float detailNoise = fbm2D(
+                static_cast<float>(worldX) * 0.11f,
+                static_cast<float>(worldZ) * 0.11f
+            );
+
+            float heightFactor = macroNoise * 0.8f + detailNoise * 0.2f;
+            heightFactor = std::clamp(heightFactor, -1.0f, 1.0f);
+
+            const int terrainHeight = std::clamp(
+                static_cast<int>(std::round(5.0f + heightFactor * 3.5f)),
+                1,
+                Chunk::SizeY - 2
+            );
+
+            for (int y = 0; y <= terrainHeight; ++y) {
+                if (y == terrainHeight) {
+                    worldChunk.chunk.set(localX, y, localZ, BlockType::Grass);
+                } else if (y >= terrainHeight - 2) {
+                    worldChunk.chunk.set(localX, y, localZ, BlockType::Dirt);
+                } else {
+                    worldChunk.chunk.set(localX, y, localZ, BlockType::Stone);
+                }
             }
         }
     }

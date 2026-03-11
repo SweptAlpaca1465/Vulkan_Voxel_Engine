@@ -99,6 +99,39 @@ std::array<float, 3> getFaceNormal(int axis, int normal) {
 }
 
 Vertex makeVertex(float x, float y, float z, BlockType block, float shade, uint8_t aoLevel, int axis, int normal) {
+
+float getAmbientOcclusionFactor(uint8_t aoLevel) {
+    const float darkness = static_cast<float>(aoLevel) * 0.08f;
+    return std::clamp(1.0f - darkness, 0.55f, 1.0f);
+}
+
+uint8_t computeFaceAOLevel(
+    const Chunk& chunk,
+    const Chunk* west,
+    const Chunk* east,
+    const Chunk* north,
+    const Chunk* south,
+    int axis,
+    int a,
+    int b,
+    int c
+) {
+    const BlockType left  = getBlockByAxis(chunk, west, east, north, south, axis, a, b - 1, c);
+    const BlockType right = getBlockByAxis(chunk, west, east, north, south, axis, a, b + 1, c);
+    const BlockType down  = getBlockByAxis(chunk, west, east, north, south, axis, a, b, c - 1);
+    const BlockType up    = getBlockByAxis(chunk, west, east, north, south, axis, a, b, c + 1);
+    const BlockType back  = getBlockByAxis(chunk, west, east, north, south, axis, a - 1, b, c);
+
+    uint8_t occluders = 0;
+    occluders += static_cast<uint8_t>(isSolid(left));
+    occluders += static_cast<uint8_t>(isSolid(right));
+    occluders += static_cast<uint8_t>(isSolid(down));
+    occluders += static_cast<uint8_t>(isSolid(up));
+    occluders += static_cast<uint8_t>(isSolid(back));
+    return occluders;
+}
+
+Vertex makeVertex(float x, float y, float z, BlockType block, float shade, uint8_t aoLevel) {
     std::array<float, 3> color = getBaseColor(block);
 
     const float ao = getAmbientOcclusionFactor(aoLevel);
@@ -216,6 +249,7 @@ void addQuad(
 
     for (const auto& p : positions) {
         mesh.vertices.push_back(makeVertex(p[0], p[1], p[2], block, shade, aoLevel, axis, normal));
+        mesh.vertices.push_back(makeVertex(p[0], p[1], p[2], block, shade, aoLevel));
     }
 
     mesh.indices.push_back(startIndex + 0);

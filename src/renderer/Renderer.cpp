@@ -52,6 +52,8 @@ public:
 
         camera.setPosition(player.getEyePosition());
         movementModifiers = physics.getMovementModifiers();
+        glfwSetInputMode(window.getNativeHandle(), GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        camera.setPosition(player.getEyePosition());
         lastFpsTime = glfwGetTime();
         initVulkan();
     }
@@ -499,6 +501,12 @@ private:
         }
         if (glfwGetKey(nativeWindow, GLFW_KEY_3) == GLFW_PRESS) {
             hotbarIndex = 2;
+            player.setSelectedBlockType(BlockType::Grass);
+        }
+        if (glfwGetKey(nativeWindow, GLFW_KEY_2) == GLFW_PRESS) {
+            player.setSelectedBlockType(BlockType::Dirt);
+        }
+        if (glfwGetKey(nativeWindow, GLFW_KEY_3) == GLFW_PRESS) {
             player.setSelectedBlockType(BlockType::Stone);
         }
 
