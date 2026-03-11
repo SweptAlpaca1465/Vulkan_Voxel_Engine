@@ -42,7 +42,6 @@ public:
         : window(window) {
         glfwSetInputMode(window.getNativeHandle(), GLFW_CURSOR, GLFW_CURSOR_DISABLED);
         camera.setPosition(player.getEyePosition());
-        movementModifiers = physics.getMovementModifiers();
         lastFpsTime = glfwGetTime();
         initVulkan();
     }

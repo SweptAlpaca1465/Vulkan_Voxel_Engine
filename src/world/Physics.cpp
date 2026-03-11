@@ -14,29 +14,6 @@ Physics::Physics()
       groundFriction(0.80f) {
 }
 
-
-Physics::MovementModifiers Physics::getMovementModifiers() const {
-    MovementModifiers modifiers{};
-    modifiers.walkSpeed = walkSpeed;
-    modifiers.sprintSpeed = sprintSpeed;
-    modifiers.groundAcceleration = groundAcceleration;
-    modifiers.airAcceleration = airAcceleration;
-    modifiers.groundFriction = groundFriction;
-    modifiers.jumpVelocity = jumpVelocity;
-    modifiers.gravity = gravity;
-    return modifiers;
-}
-
-void Physics::setMovementModifiers(const MovementModifiers& modifiers) {
-    walkSpeed = std::clamp(modifiers.walkSpeed, 0.005f, 0.20f);
-    sprintSpeed = std::clamp(modifiers.sprintSpeed, walkSpeed, 0.30f);
-    groundAcceleration = std::clamp(modifiers.groundAcceleration, 0.01f, 1.0f);
-    airAcceleration = std::clamp(modifiers.airAcceleration, 0.005f, 1.0f);
-    groundFriction = std::clamp(modifiers.groundFriction, 0.10f, 0.99f);
-    jumpVelocity = std::clamp(modifiers.jumpVelocity, 0.01f, 0.20f);
-    gravity = std::clamp(modifiers.gravity, 0.0005f, 0.03f);
-}
-
 void Physics::simulatePlayer(
     Player& player,
     const World& world,
